@@ -1,0 +1,440 @@
+import { serve } from '@hono/node-server'
+import { serveStatic } from '@hono/node-server/serve-static'
+import { Hono } from 'hono'
+import { streamSSE } from 'hono/streaming'
+import { randomUUID } from 'node:crypto'
+import fsp from 'node:fs/promises'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  allSessions, getSessionRow, projectRows, removeSession as removeSessionFromIndex,
+  search, stats, type SessionRow,
+} from './db.js'
+import { chainFrom, chainToText, foldSession } from './parser.js'
+import {
+  liveSessionIds, listTrash, purgeTrash, readSessionFile, reindexSession,
+  renameSession, restoreSession, scanAll, trashSession,
+} from './scanner.js'
+import { normalizeCwd, projectDisplayName, tildify, PROJECTS_DIR } from './paths.js'
+import { RunnerRegistry } from './runner.js'
+import { preflightOrExit, runChecks } from './preflight.js'
+import type {
+  ApprovalDecision, ProjectSummary, SessionDetail, SessionSummary,
+} from '../shared/types.js'
+
+const PORT = Number(process.env.PORT || 5274)
+const HOST = process.env.HOST || '127.0.0.1'
+const ORIGIN = `http://${HOST === '0.0.0.0' ? '127.0.0.1' : HOST}:${PORT}`
+/** 内部审批端点的共享密钥，只发给我们自己 spawn 的 MCP 进程 */
+const TOKEN = process.env.CCS_TOKEN || randomUUID()
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const WEB_DIST = path.join(HERE, '..', 'dist', 'web')
+
+const runners = new RunnerRegistry({ serverOrigin: ORIGIN, token: TOKEN, idleMs: 10 * 60_000 })
+const app = new Hono()
+
+function toSummary(r: SessionRow, live: Set<string>): SessionSummary {
+  return {
+    sessionId: r.session_id,
+    projectDir: r.project_dir,
+    cwd: r.cwd,
+    title: r.title,
+    titleSource: r.title_source as SessionSummary['titleSource'],
+    firstPrompt: r.first_prompt,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    messageCount: r.msg_count,
+    gitBranch: r.git_branch,
+    model: r.model,
+    costUsd: r.cost_usd,
+    totalTokens: r.in_tokens + r.out_tokens,
+    hasBranches: r.has_branches === 1,
+    live: live.has(r.session_id),
+    sizeBytes: r.size_bytes,
+  }
+}
+
+// ---------------- 只读浏览 ----------------
+
+app.get('/api/projects', (c) => {
+  const out: ProjectSummary[] = projectRows().map((p) => ({
+    cwd: p.cwd,
+    name: projectDisplayName(p.cwd),
+    projectDirs: (p.dirs ?? '').split(',').filter(Boolean),
+    sessionCount: p.n,
+    lastActiveAt: p.last,
+    costUsd: p.cost ?? 0,
+    gitBranches: (p.branches ?? '').split(',').filter(Boolean),
+  }))
+  return c.json({ projects: out, claudeHome: tildify(PROJECTS_DIR) })
+})
+
+app.get('/api/sessions', (c) => {
+  const cwd = c.req.query('cwd')
+  const live = liveSessionIds()
+  const rows = allSessions(cwd ? normalizeCwd(cwd) : undefined)
+  return c.json({ sessions: rows.map((r) => toSummary(r, live)) })
+})
+
+app.get('/api/sessions/:id', async (c) => {
+  const id = c.req.param('id')
+  const row = getSessionRow(id)
+  const file = await readSessionFile(id)
+  if (!file || !row) {
+    // 新建但还没发过消息的会话：磁盘与索引都没有，返回一个空壳让前端能进聊天界面
+    const cwd = runners.cwdOf(id)
+    if (cwd) {
+      const empty: SessionDetail = {
+        summary: {
+          sessionId: id, projectDir: '', cwd, title: '新会话', titleSource: 'prompt',
+          firstPrompt: '', createdAt: null, updatedAt: null, messageCount: 0,
+          gitBranch: null, model: null, costUsd: 0, totalTokens: 0,
+          hasBranches: false, live: false, sizeBytes: 0,
+        },
+        messages: [], branches: [], leafUuid: null,
+      }
+      return c.json(empty)
+    }
+    return c.json({ error: '会话不存在' }, 404)
+  }
+  const parsed = foldSession(file.records, id)
+  const detail: SessionDetail = {
+    summary: toSummary(row, liveSessionIds()),
+    messages: parsed.messages,
+    branches: parsed.branches,
+    leafUuid: parsed.leafUuid,
+  }
+  return c.json(detail)
+})
+
+app.get('/api/search', (c) => {
+  const q = c.req.query('q') ?? ''
+  const cwd = c.req.query('cwd')
+  return c.json({ hits: search(q, { cwdKey: cwd ? normalizeCwd(cwd) : undefined }) })
+})
+
+app.get('/api/stats', (c) => c.json(stats()))
+
+app.get('/api/health', (c) => c.json({ checks: runChecks() }))
+
+app.post('/api/rescan', async (c) => c.json(await scanAll(c.req.query('full') === '1')))
+
+/**
+ * 新建会话。CLI 支持 --session-id 预先指定 uuid（已实测会被采纳并落盘到
+ * cwd 对应的项目目录），所以这里先生成 id 交给前端，第一条消息发出时才真正 spawn。
+ */
+app.post('/api/sessions/new', async (c) => {
+  const body = await c.req.json<{ cwd?: string }>().catch(() => ({} as { cwd?: string }))
+  const cwd = (body.cwd ?? '').trim()
+  if (!cwd) return c.json({ error: '必须指定工作目录' }, 400)
+  if (!path.isAbsolute(cwd)) return c.json({ error: '工作目录必须是绝对路径' }, 400)
+  try {
+    const st = await fsp.stat(cwd)
+    if (!st.isDirectory()) return c.json({ error: '该路径不是目录' }, 400)
+  } catch {
+    return c.json({ error: '目录不存在' }, 400)
+  }
+  const sessionId = randomUUID()
+  // 注册为 draft：磁盘还没有 jsonl，DB 也查不到，后续 /stream 与 /send 靠 registry 兜底
+  runners.getOrCreate(sessionId, cwd, true)
+  return c.json({ sessionId, cwd })
+})
+
+/** 候选工作目录：已有项目 + 它们的父目录下的兄弟目录，供新建会话时选择 */
+app.get('/api/cwd-suggestions', async (c) => {
+  const seen = new Set<string>()
+  const out: { cwd: string; known: boolean }[] = []
+  for (const p of projectRows()) {
+    if (seen.has(p.cwd)) continue
+    seen.add(p.cwd)
+    out.push({ cwd: p.cwd, known: true })
+  }
+  // 再补上主要工作区下的直接子目录（存在 .git 或 package.json 的才算项目）
+  const roots = [...new Set(out.map((o) => path.dirname(o.cwd)))].slice(0, 6)
+  for (const root of roots) {
+    let entries: string[] = []
+    try {
+      entries = (await fsp.readdir(root, { withFileTypes: true }))
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+        .map((d) => path.join(root, d.name))
+    } catch { continue }
+    for (const dir of entries) {
+      if (seen.has(dir) || out.length > 200) continue
+      const isProject = await Promise.all([
+        fsp.stat(path.join(dir, '.git')).then(() => true).catch(() => false),
+        fsp.stat(path.join(dir, 'package.json')).then(() => true).catch(() => false),
+      ])
+      if (!isProject.some(Boolean)) continue
+      seen.add(dir)
+      out.push({ cwd: dir, known: false })
+    }
+  }
+  return c.json({ suggestions: out })
+})
+
+/** 两条分支的对比：返回各自的消息链与拍平文本，diff 由前端计算渲染 */
+app.get('/api/sessions/:id/branch-diff', async (c) => {
+  const id = c.req.param('id')
+  const a = c.req.query('a')
+  const b = c.req.query('b')
+  if (!a || !b) return c.json({ error: '需要 a 与 b 两个分支头 uuid' }, 400)
+  const file = await readSessionFile(id)
+  if (!file) return c.json({ error: '会话不存在' }, 404)
+  const parsed = foldSession(file.records, id)
+  const chainA = chainFrom(parsed.messages, a)
+  const chainB = chainFrom(parsed.messages, b)
+  if (chainA.length === 0 || chainB.length === 0) {
+    return c.json({ error: '分支头 uuid 不在该会话中' }, 404)
+  }
+  return c.json({
+    a: { headUuid: a, messages: chainA, text: chainToText(chainA) },
+    b: { headUuid: b, messages: chainB, text: chainToText(chainB) },
+  })
+})
+
+/**
+ * 重命名会话。写的是 CLI 自己的 custom-title 机制，终端里的 /resume 选择器也会跟着变。
+ * 正在运行的会话不改：CLI 进程可能正在写同一个文件。
+ */
+app.patch('/api/sessions/:id/title', async (c) => {
+  const id = c.req.param('id')
+  const row = getSessionRow(id)
+  if (!row) return c.json({ error: '会话不存在' }, 404)
+  if (liveSessionIds().has(id)) {
+    return c.json({ error: '该会话正在终端里运行，请先结束再改名' }, 409)
+  }
+  const body = await c.req.json<{ title?: string }>().catch(() => ({} as { title?: string }))
+  const title = (body.title ?? '').replace(/[\r\n\t]/g, ' ').trim()
+  if (title.length > 200) return c.json({ error: '标题过长（上限 200 字）' }, 400)
+  try {
+    // 空串 = 清除自定义标题，回落到 AI 标题
+    await renameSession(id, title)
+    await reindexSession(id)
+    const updated = getSessionRow(id)
+    return c.json({ ok: true, title: updated?.title ?? title, titleSource: updated?.title_source ?? 'custom' })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 500)
+  }
+})
+
+/**
+ * 删除会话 —— 移到回收站，可撤销。
+ * 会话正在终端里跑时拒绝删除：那个进程还会继续往文件里追加内容。
+ */
+app.delete('/api/sessions/:id', async (c) => {
+  const id = c.req.param('id')
+  const row = getSessionRow(id)
+  if (!row) return c.json({ error: '会话不存在' }, 404)
+
+  // 顺序很重要：先收掉本 App 自己的子进程（它为了多轮对话会一直挂着），
+  // 等它真正退出后再判断是否还有终端在占用。反过来会把自己的进程误判成占用。
+  await runners.disposeOne(id)
+
+  if (liveSessionIds().has(id)) {
+    return c.json({ error: '该会话正在终端里运行，请先结束再删除' }, 409)
+  }
+  try {
+    const entry = await trashSession(id, row.title, row.cwd)
+    removeSessionFromIndex(id)
+    return c.json({ ok: true, entry })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 500)
+  }
+})
+
+app.post('/api/sessions/:id/restore', async (c) => {
+  const id = c.req.param('id')
+  try {
+    const entry = await restoreSession(id)
+    await reindexSession(id)
+    return c.json({ ok: true, entry })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+app.get('/api/trash', async (c) => c.json({ items: await listTrash() }))
+
+/** 彻底删除，不可恢复 */
+app.delete('/api/trash/:id', async (c) => {
+  await purgeTrash(c.req.param('id'))
+  return c.json({ ok: true })
+})
+
+/** 导出为 Markdown，方便贴 issue 或存档 */
+app.get('/api/sessions/:id/export', async (c) => {
+  const id = c.req.param('id')
+  const file = await readSessionFile(id)
+  if (!file) return c.json({ error: '会话不存在' }, 404)
+  const p = foldSession(file.records, id)
+  const lines: string[] = [
+    `# ${p.customTitle ?? p.aiTitle ?? p.firstPrompt.slice(0, 60) ?? id}`,
+    '', `- session: \`${id}\``, `- cwd: \`${p.cwd ?? '?'}\``,
+    `- 时间: ${p.firstTs ?? '?'} → ${p.lastTs ?? '?'}`, '', '---', '',
+  ]
+  for (const m of p.messages) {
+    if (m.meta) continue
+    lines.push(`## ${m.role === 'user' ? '👤 用户' : m.role === 'assistant' ? '🤖 Claude' : '⚙️ 系统'}${m.ts ? ` · ${m.ts}` : ''}`, '')
+    for (const b of m.blocks) {
+      if (b.kind === 'text') lines.push(b.text, '')
+      else if (b.kind === 'thinking') lines.push('<details><summary>thinking</summary>', '', b.text, '', '</details>', '')
+      else if (b.kind === 'tool') {
+        lines.push(`**🔧 ${b.name}**`, '', '```json', JSON.stringify(b.input, null, 2), '```', '')
+        if (b.result) lines.push('```', b.result.text.slice(0, 4000), '```', '')
+      }
+    }
+  }
+  return c.text(lines.join('\n'), 200, {
+    'content-type': 'text/markdown; charset=utf-8',
+    'content-disposition': `attachment; filename="${id}.md"`,
+  })
+})
+
+// ---------------- 聊天（SSE + 发送） ----------------
+
+app.get('/api/chat/:id/stream', (c) => {
+  const id = c.req.param('id')
+  const row = getSessionRow(id)
+  // 新建会话此刻还没有 jsonl，DB 查不到，回退到 registry 里登记的 cwd
+  const cwd = row?.cwd ?? runners.cwdOf(id)
+  if (!cwd) return c.json({ error: '会话不存在' }, 404)
+  const session = runners.getOrCreate(id, cwd)
+
+  return streamSSE(c, async (stream) => {
+    const send = (data: unknown) => stream.writeSSE({ data: JSON.stringify(data) })
+    // 补发尚未处理的审批，避免刷新页面后弹窗丢失、CLI 永久挂住
+    for (const request of session.pendingApprovals) {
+      await send({ type: 'approval', request })
+    }
+    await send({ type: 'status', state: session.isBusy ? 'thinking' : 'idle', sessionId: id })
+
+    // 事件先入队，再由循环取出写出 —— 避免在订阅回调里直接 await 造成乱序
+    const queue: unknown[] = []
+    let wake: (() => void) | null = null
+    const unsub = session.subscribe((ev) => {
+      queue.push(ev)
+      wake?.()
+    })
+    const abort = () => wake?.()
+    c.req.raw.signal.addEventListener('abort', abort)
+
+    try {
+      while (!c.req.raw.signal.aborted) {
+        while (queue.length) await send(queue.shift())
+        if (c.req.raw.signal.aborted) break
+        // 等新事件，最多等 15s 就发一次心跳，防止空闲连接被代理掐断
+        const woken = await new Promise<boolean>((resolve) => {
+          const t = setTimeout(() => { wake = null; resolve(false) }, 15_000)
+          wake = () => { clearTimeout(t); wake = null; resolve(true) }
+        })
+        if (!woken && !c.req.raw.signal.aborted) await send({ type: 'ping' })
+      }
+    } finally {
+      unsub()
+      c.req.raw.signal.removeEventListener('abort', abort)
+    }
+  })
+})
+
+app.post('/api/chat/:id/send', async (c) => {
+  const id = c.req.param('id')
+  const row = getSessionRow(id)
+  const cwd = row?.cwd ?? runners.cwdOf(id)
+  if (!cwd) return c.json({ error: '会话不存在' }, 404)
+  if (liveSessionIds().has(id)) {
+    // 实测：resume 一个正在运行的会话会直接失败，必须提前挡掉
+    return c.json({ error: '该会话正在终端里运行，无法同时从 Web 续聊' }, 409)
+  }
+  const body = await c.req.json<{ text?: string }>()
+  const text = (body.text ?? '').trim()
+  if (!text) return c.json({ error: '内容为空' }, 400)
+  runners.getOrCreate(id, cwd).send(text)
+  return c.json({ ok: true })
+})
+
+app.post('/api/chat/:id/interrupt', (c) => {
+  runners.get(c.req.param('id'))?.interrupt()
+  return c.json({ ok: true })
+})
+
+app.post('/api/chat/:id/approve', async (c) => {
+  const id = c.req.param('id')
+  const session = runners.get(id)
+  if (!session) return c.json({ error: '会话未在运行' }, 404)
+  const body = await c.req.json<{ approvalId: string; decision: ApprovalDecision }>()
+  const ok = session.resolveApproval(body.approvalId, body.decision)
+  return c.json({ ok }, ok ? 200 : 404)
+})
+
+// ---------------- 内部：MCP 审批器回调 ----------------
+
+app.post('/api/internal/approval', async (c) => {
+  if (c.req.header('x-ccs-token') !== TOKEN) return c.json({ behavior: 'deny', message: 'token 不匹配' }, 403)
+  const body = await c.req.json<{
+    sessionId: string; toolName: string; input: Record<string, unknown>
+    toolUseId?: string; timeoutMs?: number
+  }>()
+  const session = runners.findForApproval(body.sessionId)
+  if (!session) {
+    return c.json<ApprovalDecision>({ behavior: 'deny', message: '找不到对应会话，已拒绝' })
+  }
+  // 这里会一直挂住，直到用户在浏览器点击或超时
+  const decision = await session.requestApproval(
+    { sessionId: body.sessionId, toolName: body.toolName, input: body.input, toolUseId: body.toolUseId },
+    body.timeoutMs ?? 300_000,
+  )
+  return c.json(decision)
+})
+
+// ---------------- 静态资源（生产模式） ----------------
+
+if (fs.existsSync(WEB_DIST)) {
+  app.use('/*', serveStatic({ root: path.relative(process.cwd(), WEB_DIST) }))
+  app.get('/*', serveStatic({ path: path.relative(process.cwd(), path.join(WEB_DIST, 'index.html')) }))
+}
+
+// ---------------- 启动 ----------------
+
+const boot = async () => {
+  // 环境不满足就在这里明确报错退出，别让用户对着栈追踪猜
+  preflightOrExit()
+
+  const r = await scanAll()
+  console.log(`[ccs] 索引完成：扫描 ${r.scanned} 个会话，重建 ${r.reindexed} 个，清理 ${r.removed} 个，耗时 ${r.ms}ms`)
+
+  // 文件变更时增量重建，让终端里的新会话自动出现在 Web。
+  // 全新机器上这个目录还不存在，fs.watch 会 ENOENT 并永久降级成手动刷新 ——
+  // 先建出来（Claude Code 自己也会建，幂等无副作用）。
+  try {
+    fs.mkdirSync(PROJECTS_DIR, { recursive: true })
+  } catch { /* 建不出来就让下面的 watch 去报错 */ }
+
+  try {
+    fs.watch(PROJECTS_DIR, { recursive: true }, (_ev, filename) => {
+      if (!filename || !filename.endsWith('.jsonl')) return
+      const id = path.basename(filename, '.jsonl')
+      clearTimeout(debounce.get(id))
+      debounce.set(id, setTimeout(() => {
+        debounce.delete(id)
+        void reindexSession(id).catch(() => { /* 写入中途读到是正常的 */ })
+      }, 800))
+    })
+  } catch (e) {
+    console.warn('[ccs] 目录监听不可用，改用手动 /api/rescan：', (e as Error).message)
+  }
+
+  serve({ fetch: app.fetch, port: PORT, hostname: HOST }, (info) => {
+    console.log(`[ccs] server  http://127.0.0.1:${info.port}`)
+    if (!fs.existsSync(WEB_DIST)) {
+      console.log(`[ccs] 未构建前端，开发模式请访问 vite: http://localhost:${process.env.WEB_PORT || 5273}`)
+    }
+  })
+}
+const debounce = new Map<string, NodeJS.Timeout>()
+
+const shutdown = () => { runners.disposeAll(); process.exit(0) }
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)
+
+void boot()

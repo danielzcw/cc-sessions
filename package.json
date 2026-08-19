@@ -1,0 +1,48 @@
+{
+  "name": "cc-sessions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code CLI 历史会话管理器：按项目分组浏览、全文搜索、分支树、成本看板、Web 内续聊",
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch --clear-screen=false server/index.ts",
+    "dev:web": "vite",
+    "build": "tsc --noEmit && vite build",
+    "start": "NODE_ENV=production tsx server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "doctor": "tsx server/doctor.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@tanstack/react-virtual": "^3.14.9",
+    "dompurify": "^3.4.13",
+    "hono": "^4.6.14",
+    "marked": "^15.0.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "MIT",
+  "author": "danielzhou",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danielzcw/cc-sessions.git"
+  },
+  "homepage": "https://github.com/danielzcw/cc-sessions#readme",
+  "bugs": {
+    "url": "https://github.com/danielzcw/cc-sessions/issues"
+  }
+}
