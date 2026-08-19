@@ -41,3 +41,26 @@ export function tildify(p: string): string {
   const home = os.homedir()
   return p.startsWith(home) ? '~' + p.slice(home.length) : p
 }
+
+/**
+ * 会话 id 必须是 UUID。
+ *
+ * 所有 sessionId 都来自文件名（CLI 生成的 UUID），而这些 id 会被拼进文件路径。
+ * 不校验的话 `../../..` 就能穿越出目标目录 —— 实测可通过
+ * `DELETE /api/trash/<穿越路径>` 删除文件系统上任意 .jsonl / .meta.json。
+ */
+export function isValidSessionId(id: string): boolean {
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)
+}
+
+/**
+ * 纵深防御：确认 target 解析后确实位于 base 之内。
+ * 即使上层漏了校验，这里也不会让操作逃出目标目录。
+ */
+export function assertContained(base: string, target: string): void {
+  const b = path.resolve(base)
+  const t = path.resolve(target)
+  if (t !== b && !t.startsWith(b + path.sep)) {
+    throw new Error(`路径越界：${t} 不在 ${b} 之内`)
+  }
+}

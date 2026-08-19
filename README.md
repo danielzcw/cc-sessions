@@ -132,6 +132,10 @@ MCP 工具的返回值必须是单个 text content，内容为 JSON：
 
 安全边界：
 - 服务默认只绑 `127.0.0.1`
+- **路径穿越防护**：所有会话 id 都会被拼进文件路径，因此在 HTTP 边界强制校验为 UUID，
+  scanner 内部再做一层路径包含校验。缺了这层校验时，
+  `DELETE /api/trash/<../../..>` 可删除任意 `.jsonl`/`.meta.json`，
+  `GET /api/sessions/<../../..>/export` 可读取任意 `.jsonl`（均已实测并修复）
 - `/api/internal/approval` 校验共享 token
 - 审批 5 分钟不响应自动**拒绝**；审批通道不可达时也**默认拒绝**，绝不放行
 - 会话正文渲染过 DOMPurify —— 正文含抓取的网页与文件内容，属不可信输入，

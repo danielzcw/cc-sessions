@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
-import { PROJECTS_DIR, LIVE_SESSIONS_DIR, TRASH_DIR, normalizeCwd } from './paths.js'
+import { PROJECTS_DIR, LIVE_SESSIONS_DIR, TRASH_DIR, assertContained, isValidSessionId, normalizeCwd } from './paths.js'
 import { foldSession, parseLines } from './parser.js'
 import type { ParsedSession } from './parser.js'
 import { needsReindex, removeSession, saveSession, rebuildDailyStats, type SessionRow } from './db.js'
@@ -140,6 +140,7 @@ export async function scanAll(force = false): Promise<ScanResult> {
 
 /** 单个会话的强制重新索引（收到文件变更或聊完一轮后调用） */
 export async function reindexSession(sessionId: string): Promise<void> {
+  if (!isValidSessionId(sessionId)) return
   let dirs: string[]
   try {
     dirs = (await fsp.readdir(PROJECTS_DIR, { withFileTypes: true }))
@@ -156,6 +157,7 @@ export async function reindexSession(sessionId: string): Promise<void> {
 }
 
 export async function readSessionFile(sessionId: string): Promise<{ records: ReturnType<typeof parseLines>; projectDir: string } | null> {
+  if (!isValidSessionId(sessionId)) return null
   let dirs: string[]
   try {
     dirs = (await fsp.readdir(PROJECTS_DIR, { withFileTypes: true }))
@@ -179,6 +181,7 @@ export async function readSessionFile(sessionId: string): Promise<{ records: Ret
  * 传空字符串表示清除自定义标题，回落到 AI 生成的标题。
  */
 export async function renameSession(sessionId: string, title: string): Promise<void> {
+  if (!isValidSessionId(sessionId)) throw new Error('会话 id 非法')
   const file = await locateSessionFile(sessionId)
   if (!file) throw new Error('会话文件不存在')
   const clean = title.replace(/[\r\n\t]/g, ' ').trim().slice(0, 200)
@@ -214,6 +217,7 @@ export type TrashEntry = {
  * 会话历史是不可再生的数据，硬删除一旦误操作就没救了。
  */
 export async function trashSession(sessionId: string, title: string, cwd: string): Promise<TrashEntry> {
+  if (!isValidSessionId(sessionId)) throw new Error('会话 id 非法')
   const src = await locateSessionFile(sessionId)
   if (!src) throw new Error('会话文件不存在')
   await fsp.mkdir(TRASH_DIR, { recursive: true })
@@ -239,12 +243,18 @@ export async function trashSession(sessionId: string, title: string, cwd: string
 
 /** 从回收站还原到原始路径 */
 export async function restoreSession(sessionId: string): Promise<TrashEntry> {
+  if (!isValidSessionId(sessionId)) throw new Error('会话 id 非法')
   const metaPath = path.join(TRASH_DIR, `${sessionId}.meta.json`)
+  assertContained(TRASH_DIR, metaPath)
   const raw = await fsp.readFile(metaPath, 'utf8').catch(() => null)
   if (!raw) throw new Error('回收站里没有这个会话')
   const entry = JSON.parse(raw) as TrashEntry
   const src = path.join(TRASH_DIR, `${sessionId}.jsonl`)
   if (!fs.existsSync(src)) throw new Error('回收站文件已丢失')
+
+  // originalPath 读自回收站的 meta 文件，属于外部数据 —— 必须限制在会话目录内，
+  // 否则被篡改的 meta 就能把文件还原到任意位置
+  assertContained(PROJECTS_DIR, entry.originalPath)
 
   // 原目录可能已被清理，重建后再还原
   await fsp.mkdir(path.dirname(entry.originalPath), { recursive: true })
@@ -277,11 +287,17 @@ export async function listTrash(): Promise<TrashEntry[]> {
 
 /** 彻底删除回收站里的一条（不可恢复） */
 export async function purgeTrash(sessionId: string): Promise<void> {
-  await fsp.unlink(path.join(TRASH_DIR, `${sessionId}.jsonl`)).catch(() => {})
-  await fsp.unlink(path.join(TRASH_DIR, `${sessionId}.meta.json`)).catch(() => {})
+  if (!isValidSessionId(sessionId)) throw new Error('会话 id 非法')
+  const jsonl = path.join(TRASH_DIR, `${sessionId}.jsonl`)
+  const meta = path.join(TRASH_DIR, `${sessionId}.meta.json`)
+  assertContained(TRASH_DIR, jsonl)
+  assertContained(TRASH_DIR, meta)
+  await fsp.unlink(jsonl).catch(() => {})
+  await fsp.unlink(meta).catch(() => {})
 }
 
 async function locateSessionFile(sessionId: string): Promise<string | null> {
+  if (!isValidSessionId(sessionId)) return null
   let dirs: string[]
   try {
     dirs = (await fsp.readdir(PROJECTS_DIR, { withFileTypes: true }))

@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
-import { Hono } from 'hono'
+import { Hono, type Context, type Next } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { randomUUID } from 'node:crypto'
 import fsp from 'node:fs/promises'
@@ -16,7 +16,7 @@ import {
   liveSessionIds, listTrash, purgeTrash, readSessionFile, reindexSession,
   renameSession, restoreSession, scanAll, trashSession,
 } from './scanner.js'
-import { normalizeCwd, projectDisplayName, tildify, PROJECTS_DIR } from './paths.js'
+import { isValidSessionId, normalizeCwd, projectDisplayName, tildify, PROJECTS_DIR } from './paths.js'
 import { RunnerRegistry } from './runner.js'
 import { preflightOrExit, runChecks } from './preflight.js'
 import type {
@@ -33,6 +33,28 @@ const WEB_DIST = path.join(HERE, '..', 'dist', 'web')
 
 const runners = new RunnerRegistry({ serverOrigin: ORIGIN, token: TOKEN, idleMs: 10 * 60_000 })
 const app = new Hono()
+
+/**
+ * 边界校验：凡是路径里带会话 id 的路由，先确认 id 是 UUID。
+ *
+ * 这些 id 会被拼进文件路径，不校验就能用 `../` 穿越出目标目录。
+ * 实测未修复前 `DELETE /api/trash/<穿越路径>` 可删除文件系统上任意
+ * .jsonl / .meta.json，`GET /api/sessions/<穿越路径>/export` 可读取任意 .jsonl。
+ * scanner 内部还有一层路径包含校验兜底。
+ */
+app.use('/api/sessions/:id/*', sessionIdGuard)
+app.use('/api/sessions/:id', sessionIdGuard)
+app.use('/api/chat/:id/*', sessionIdGuard)
+app.use('/api/trash/:id', sessionIdGuard)
+
+async function sessionIdGuard(c: Context, next: Next): Promise<Response | void> {
+  const id = c.req.param('id')
+  // /api/sessions/new 不是会话 id，是固定路由
+  if (id && id !== 'new' && !isValidSessionId(id)) {
+    return c.json({ error: '会话 id 格式非法' }, 400)
+  }
+  await next()
+}
 
 function toSummary(r: SessionRow, live: Set<string>): SessionSummary {
   return {
