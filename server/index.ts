@@ -8,20 +8,29 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  allSessions, getSessionRow, projectRows, removeSession as removeSessionFromIndex,
+  allSessions, getSessionRow, projectRows, providerCounts,
+  removeProviderSessions, removeSession as removeSessionFromIndex,
   search, stats, type SessionRow,
 } from './db.js'
-import { chainFrom, chainToText, foldSession } from './parser.js'
+import { chainFrom, chainToText } from './parser.js'
 import {
-  liveSessionIds, listTrash, purgeTrash, readSessionFile, reindexSession,
+  liveSessionIds, listTrash, loadParsedSession, purgeTrash, reindexSession,
   renameSession, restoreSession, scanAll, trashSession,
 } from './scanner.js'
-import { isValidSessionId, normalizeCwd, projectDisplayName, tildify, PROJECTS_DIR } from './paths.js'
+import {
+  isSafeSessionId, migrateLegacyDataDir, normalizeCwd, projectDisplayName, tildify, PROJECTS_DIR,
+} from './paths.js'
 import { RunnerRegistry } from './runner.js'
+import {
+  getProvider, listProviders, providerConfigPath, removeProvider,
+  upsertProvider, validateProvider, expandTilde,
+} from './providers/registry.js'
 import { preflightOrExit, runChecks } from './preflight.js'
 import type {
   ApprovalDecision, ProjectSummary, SessionDetail, SessionSummary,
 } from '../shared/types.js'
+import type { ProviderConfig, ProviderRuntimeInfo } from '../shared/provider.js'
+import { probeProvider } from './providers/probe.js'
 
 const PORT = Number(process.env.PORT || 5274)
 const HOST = process.env.HOST || '127.0.0.1'
@@ -50,14 +59,19 @@ app.use('/api/trash/:id', sessionIdGuard)
 async function sessionIdGuard(c: Context, next: Next): Promise<Response | void> {
   const id = c.req.param('id')
   // /api/sessions/new 不是会话 id，是固定路由
-  if (id && id !== 'new' && !isValidSessionId(id)) {
+  if (id && id !== 'new' && !isSafeSessionId(id)) {
     return c.json({ error: '会话 id 格式非法' }, 400)
   }
   await next()
 }
 
 function toSummary(r: SessionRow, live: Set<string>): SessionSummary {
+  const cfg = getProvider(r.provider)
   return {
+    provider: r.provider,
+    providerName: cfg?.name ?? r.provider,
+    capabilities: cfg?.capabilities ?? { resume: false, rename: false, delete: true },
+    resumeCommand: (cfg?.resumeCommand ?? '').replace('{id}', r.session_id).replace('{cwd}', r.cwd),
     sessionId: r.session_id,
     projectDir: r.project_dir,
     cwd: r.cwd,
@@ -72,7 +86,8 @@ function toSummary(r: SessionRow, live: Set<string>): SessionSummary {
     costUsd: r.cost_usd,
     totalTokens: r.in_tokens + r.out_tokens,
     hasBranches: r.has_branches === 1,
-    live: live.has(r.session_id),
+    // 活跃检测依赖 ~/.claude/sessions 的 pid 文件，其他 provider 无从判断
+    live: r.provider === 'claude-code' && live.has(r.session_id),
     sizeBytes: r.size_bytes,
   }
 }
@@ -80,7 +95,8 @@ function toSummary(r: SessionRow, live: Set<string>): SessionSummary {
 // ---------------- 只读浏览 ----------------
 
 app.get('/api/projects', (c) => {
-  const out: ProjectSummary[] = projectRows().map((p) => ({
+  const provider = c.req.query('provider') || undefined
+  const out: ProjectSummary[] = projectRows(provider).map((p) => ({
     cwd: p.cwd,
     name: projectDisplayName(p.cwd),
     projectDirs: (p.dirs ?? '').split(',').filter(Boolean),
@@ -88,27 +104,34 @@ app.get('/api/projects', (c) => {
     lastActiveAt: p.last,
     costUsd: p.cost ?? 0,
     gitBranches: (p.branches ?? '').split(',').filter(Boolean),
+    providers: (p.providers ?? '').split(',').filter(Boolean),
   }))
   return c.json({ projects: out, claudeHome: tildify(PROJECTS_DIR) })
 })
 
 app.get('/api/sessions', (c) => {
   const cwd = c.req.query('cwd')
+  const provider = c.req.query('provider') || undefined
   const live = liveSessionIds()
-  const rows = allSessions(cwd ? normalizeCwd(cwd) : undefined)
+  const rows = allSessions(cwd ? normalizeCwd(cwd) : undefined, provider)
   return c.json({ sessions: rows.map((r) => toSummary(r, live)) })
 })
 
 app.get('/api/sessions/:id', async (c) => {
   const id = c.req.param('id')
-  const row = getSessionRow(id)
-  const file = await readSessionFile(id)
-  if (!file || !row) {
+  const provider = c.req.query('provider')
+  const row = getSessionRow(id, provider)
+  const loaded = await loadParsedSession(id, row?.provider ?? provider)
+  if (!loaded || !row) {
     // 新建但还没发过消息的会话：磁盘与索引都没有，返回一个空壳让前端能进聊天界面
     const cwd = runners.cwdOf(id)
     if (cwd) {
       const empty: SessionDetail = {
         summary: {
+          provider: 'claude-code',
+          providerName: 'Claude Code',
+          capabilities: { resume: true, rename: true, delete: true },
+          resumeCommand: `claude --resume ${id}`,
           sessionId: id, projectDir: '', cwd, title: '新会话', titleSource: 'prompt',
           firstPrompt: '', createdAt: null, updatedAt: null, messageCount: 0,
           gitBranch: null, model: null, costUsd: 0, totalTokens: 0,
@@ -120,7 +143,7 @@ app.get('/api/sessions/:id', async (c) => {
     }
     return c.json({ error: '会话不存在' }, 404)
   }
-  const parsed = foldSession(file.records, id)
+  const parsed = loaded.parsed
   const detail: SessionDetail = {
     summary: toSummary(row, liveSessionIds()),
     messages: parsed.messages,
@@ -133,10 +156,67 @@ app.get('/api/sessions/:id', async (c) => {
 app.get('/api/search', (c) => {
   const q = c.req.query('q') ?? ''
   const cwd = c.req.query('cwd')
-  return c.json({ hits: search(q, { cwdKey: cwd ? normalizeCwd(cwd) : undefined }) })
+  const provider = c.req.query('provider') || undefined
+  return c.json({ hits: search(q, { cwdKey: cwd ? normalizeCwd(cwd) : undefined, provider }) })
 })
 
-app.get('/api/stats', (c) => c.json(stats()))
+app.get('/api/stats', (c) => c.json(stats(c.req.query('provider') || undefined)))
+
+// ---------------- Provider 管理（页面内配置） ----------------
+
+app.get('/api/providers', (c) => {
+  const counts = providerCounts()
+  const out: ProviderRuntimeInfo[] = listProviders().map((p) => ({
+    ...p,
+    rootExists: fs.existsSync(expandTilde(p.root)),
+    sessionCount: counts[p.id] ?? 0,
+  }))
+  return c.json({ providers: out, configPath: tildify(providerConfigPath()) })
+})
+
+app.put('/api/providers/:id', async (c) => {
+  const body = await c.req.json<unknown>().catch(() => null)
+  if (!body || typeof body !== 'object') return c.json({ error: '请求体不是对象' }, 400)
+  const id = c.req.param('id')
+  if (!('id' in body) || Reflect.get(body, 'id') !== id) {
+    return c.json({ error: 'URL 里的 id 与请求体不一致' }, 400)
+  }
+  const err = validateProvider(body)
+  if (err) return c.json({ error: err }, 400)
+  try {
+    // validateProvider 已逐字段校验过，这里的断言有据可依
+    const cfg = body as ProviderConfig
+    upsertProvider(cfg)
+    return c.json({ ok: true })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+app.delete('/api/providers/:id', (c) => {
+  const id = c.req.param('id')
+  try {
+    removeProvider(id)
+    // 配置删了索引也要清，否则会话还留在列表里但已无来源可解析
+    const purged = removeProviderSessions(id)
+    return c.json({ ok: true, purged })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+/** 试跑：拿真实文件验证规则配置是否能解析出内容，配之前先看效果 */
+app.post('/api/providers/probe', async (c) => {
+  const body = await c.req.json<unknown>().catch(() => null)
+  const err = validateProvider(body)
+  if (err) return c.json({ error: err }, 400)
+  const cfg = body as ProviderConfig
+  try {
+    return c.json(await probeProvider(cfg))
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
 
 app.get('/api/health', (c) => c.json({ checks: runChecks() }))
 
@@ -201,9 +281,9 @@ app.get('/api/sessions/:id/branch-diff', async (c) => {
   const a = c.req.query('a')
   const b = c.req.query('b')
   if (!a || !b) return c.json({ error: '需要 a 与 b 两个分支头 uuid' }, 400)
-  const file = await readSessionFile(id)
-  if (!file) return c.json({ error: '会话不存在' }, 404)
-  const parsed = foldSession(file.records, id)
+  const loaded = await loadParsedSession(id, c.req.query('provider') ?? undefined)
+  if (!loaded) return c.json({ error: '会话不存在' }, 404)
+  const parsed = loaded.parsed
   const chainA = chainFrom(parsed.messages, a)
   const chainB = chainFrom(parsed.messages, b)
   if (chainA.length === 0 || chainB.length === 0) {
@@ -221,9 +301,15 @@ app.get('/api/sessions/:id/branch-diff', async (c) => {
  */
 app.patch('/api/sessions/:id/title', async (c) => {
   const id = c.req.param('id')
-  const row = getSessionRow(id)
+  const row = getSessionRow(id, c.req.query('provider') || undefined)
   if (!row) return c.json({ error: '会话不存在' }, 404)
-  if (liveSessionIds().has(id)) {
+  const cfg = getProvider(row.provider)
+  if (!cfg?.capabilities.rename) {
+    // 写回标题依赖各 CLI 自己的机制（claude 是 custom-title 记录），
+    // 没实现的 provider 一律拒绝，不能靠前端隐藏按钮当防护
+    return c.json({ error: `${cfg?.name ?? row.provider} 暂不支持改名` }, 400)
+  }
+  if (row.provider === 'claude-code' && liveSessionIds().has(id)) {
     return c.json({ error: '该会话正在终端里运行，请先结束再改名' }, 409)
   }
   const body = await c.req.json<{ title?: string }>().catch(() => ({} as { title?: string }))
@@ -231,9 +317,9 @@ app.patch('/api/sessions/:id/title', async (c) => {
   if (title.length > 200) return c.json({ error: '标题过长（上限 200 字）' }, 400)
   try {
     // 空串 = 清除自定义标题，回落到 AI 标题
-    await renameSession(id, title)
-    await reindexSession(id)
-    const updated = getSessionRow(id)
+    await renameSession(id, title, row.provider)
+    await reindexSession(id, row.provider)
+    const updated = getSessionRow(id, row.provider)
     return c.json({ ok: true, title: updated?.title ?? title, titleSource: updated?.title_source ?? 'custom' })
   } catch (e) {
     return c.json({ error: (e as Error).message }, 500)
@@ -246,19 +332,20 @@ app.patch('/api/sessions/:id/title', async (c) => {
  */
 app.delete('/api/sessions/:id', async (c) => {
   const id = c.req.param('id')
-  const row = getSessionRow(id)
+  const row = getSessionRow(id, c.req.query('provider') || undefined)
   if (!row) return c.json({ error: '会话不存在' }, 404)
 
   // 顺序很重要：先收掉本 App 自己的子进程（它为了多轮对话会一直挂着），
   // 等它真正退出后再判断是否还有终端在占用。反过来会把自己的进程误判成占用。
   await runners.disposeOne(id)
 
-  if (liveSessionIds().has(id)) {
+  // 活跃检测读的是 ~/.claude/sessions，只对 claude-code 有意义
+  if (row.provider === 'claude-code' && liveSessionIds().has(id)) {
     return c.json({ error: '该会话正在终端里运行，请先结束再删除' }, 409)
   }
   try {
-    const entry = await trashSession(id, row.title, row.cwd)
-    removeSessionFromIndex(id)
+    const entry = await trashSession(id, row.title, row.cwd, row.provider)
+    removeSessionFromIndex(row.provider, id)
     return c.json({ ok: true, entry })
   } catch (e) {
     return c.json({ error: (e as Error).message }, 500)
@@ -287,9 +374,9 @@ app.delete('/api/trash/:id', async (c) => {
 /** 导出为 Markdown，方便贴 issue 或存档 */
 app.get('/api/sessions/:id/export', async (c) => {
   const id = c.req.param('id')
-  const file = await readSessionFile(id)
-  if (!file) return c.json({ error: '会话不存在' }, 404)
-  const p = foldSession(file.records, id)
+  const loaded = await loadParsedSession(id, c.req.query('provider') ?? undefined)
+  if (!loaded) return c.json({ error: '会话不存在' }, 404)
+  const p = loaded.parsed
   const lines: string[] = [
     `# ${p.customTitle ?? p.aiTitle ?? p.firstPrompt.slice(0, 60) ?? id}`,
     '', `- session: \`${id}\``, `- cwd: \`${p.cwd ?? '?'}\``,
@@ -368,6 +455,10 @@ app.post('/api/chat/:id/send', async (c) => {
     // 实测：resume 一个正在运行的会话会直接失败，必须提前挡掉
     return c.json({ error: '该会话正在终端里运行，无法同时从 Web 续聊' }, 409)
   }
+  const row2 = getSessionRow(id)
+  if (row2 && !getProvider(row2.provider)?.capabilities.resume) {
+    return c.json({ error: `${row2.provider} 会话只能在终端里继续` }, 400)
+  }
   const body = await c.req.json<{ text?: string }>()
   const text = (body.text ?? '').trim()
   if (!text) return c.json({ error: '内容为空' }, 400)
@@ -421,6 +512,9 @@ if (fs.existsSync(WEB_DIST)) {
 const boot = async () => {
   // 环境不满足就在这里明确报错退出，别让用户对着栈追踪猜
   preflightOrExit()
+
+  const moved = migrateLegacyDataDir()
+  if (moved.length) console.log(`[ccs] 已从旧目录迁移 ${moved.length} 个回收站文件`)
 
   const r = await scanAll()
   console.log(`[ccs] 索引完成：扫描 ${r.scanned} 个会话，重建 ${r.reindexed} 个，清理 ${r.removed} 个，耗时 ${r.ms}ms`)

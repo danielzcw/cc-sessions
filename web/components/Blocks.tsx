@@ -59,7 +59,9 @@ function toolHint(input: Record<string, unknown>): string {
   const pick = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : undefined)
   const v =
     pick('command') ?? pick('file_path') ?? pick('pattern') ?? pick('path') ??
-    pick('prompt') ?? pick('url') ?? pick('query') ?? pick('description')
+    pick('prompt') ?? pick('url') ?? pick('query') ?? pick('description') ??
+    // 通用 provider 把非对象入参统一收进 input（如 codex 的 exec 是一段脚本字符串）
+    pick('input')
   if (v) return v.replace(/\s+/g, ' ').slice(0, 120)
   const keys = Object.keys(input)
   return keys.length ? `${keys.length} 个参数` : ''
@@ -163,9 +165,10 @@ function BlockView({ block }: { block: ViewBlock }) {
   }
 }
 
+// 标签不能写死某个 CLI 的名字：同一个界面里会同时出现 claude / codex / omp 的会话
 const ROLE_LABEL: Record<string, string> = {
   user: '👤 你',
-  assistant: '🤖 Claude',
+  assistant: '🤖 助手',
   system: '⚙️ 系统',
 }
 

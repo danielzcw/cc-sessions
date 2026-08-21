@@ -22,7 +22,10 @@ export type ParsedSession = {
   visibleCount: number
 }
 
-export function parseLines(lines: string[]): RawRecord[] {
+/** parseLines 的返回类型，供消费方引用而不必写 ReturnType<typeof parseLines> */
+export type RawRecordList = RawRecord[]
+
+export function parseLines(lines: string[]): RawRecordList {
   const out: RawRecord[] = []
   for (const line of lines) {
     const t = line.trim()

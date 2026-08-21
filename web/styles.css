@@ -837,3 +837,118 @@ h3.sec { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; col
 
 .head-title h2.editable { cursor: text; }
 .head-title h2.editable:hover { text-decoration: underline dotted var(--text-faint); }
+
+/* ---------- 多 CLI 来源 ---------- */
+
+.prov-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 10px 8px;
+}
+.prov-switch button {
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.prov-switch button:hover { background: var(--bg-hover); }
+.prov-switch button.on {
+  background: var(--bg-active);
+  color: var(--text);
+  border-color: var(--border-strong);
+  font-weight: 500;
+}
+.prov-switch .n {
+  font-family: var(--mono);
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.badge.prov { background: var(--bg-active); color: var(--text-dim); }
+
+/* 来源设置页 */
+.prov-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.prov-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.prov-info { flex: 1; min-width: 0; }
+.prov-name { font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.prov-meta { font-size: 11px; font-family: var(--mono); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prov-toggle { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-dim); cursor: pointer; flex: none; }
+
+.prov-editor {
+  margin-top: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--bg-raised);
+}
+.prov-json {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg-sunken);
+  color: var(--text);
+  outline: none;
+  resize: vertical;
+}
+.prov-json:focus { border-color: var(--accent); }
+.prov-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+
+.notice.ok { background: var(--accent-soft); color: var(--accent); }
+
+/* 试跑结果 */
+.probe { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.probe-head { font-size: 12px; font-family: var(--mono); margin-bottom: 8px; }
+.probe-warn { margin: 0 0 10px; padding-left: 18px; font-size: 12px; color: var(--danger); }
+.probe-sample {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--bg-sunken);
+}
+.probe-meta { font-size: 11px; font-family: var(--mono); color: var(--text-faint); margin: 3px 0 6px; }
+.probe-line { font-size: 12px; margin: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.probe-line .tag { font-family: var(--mono); font-size: 10px; color: var(--accent); margin-right: 5px; }
+.probe-empty { font-size: 12px; color: var(--danger); }
+
+/* 只能在终端续聊的提示 */
+.resume-hint {
+  max-width: 860px;
+  margin: 0 auto;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.resume-cmd {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 10px;
+  color: var(--accent);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.resume-cmd:hover { border-color: var(--accent); }

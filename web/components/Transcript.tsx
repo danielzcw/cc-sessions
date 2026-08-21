@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import type { BranchInfo, SessionDetail, ViewMessage } from '../../shared/types.js'
+import type { BranchInfo, SessionDetail, SessionSummary, ViewMessage } from '../../shared/types.js'
 import { api, fmtCost, fmtTime, shortPath } from '../api.js'
 import { MessageView } from './Blocks.js'
 import { ApprovalDialog } from './ApprovalDialog.js'
@@ -103,12 +103,15 @@ function selectBranch(messages: ViewMessage[], branches: BranchInfo[], chosen: R
 }
 
 export function Transcript({
-  sessionId, onNavigate, onRenamed,
+  sessionId, sessions, onNavigate, onRenamed,
 }: {
   sessionId: string
+  /** 列表数据，用于在详情加载前就知道该会话属于哪个 provider */
+  sessions: SessionSummary[]
   onNavigate: (id: string) => void
   onRenamed?: () => void
 }) {
+  const listed = sessions.find((s) => s.sessionId === sessionId)
   const [detail, setDetail] = useState<SessionDetail | null>(null)
   const [loadErr, setLoadErr] = useState<string | null>(null)
   const [chosen, setChosen] = useState<Record<string, string>>({})
@@ -116,6 +119,7 @@ export function Transcript({
   const [draft, setDraft] = useState('')
   const [compare, setCompare] = useState<{ a: string; b: string; labelA: string; labelB: string } | null>(null)
   const [copied, setCopied] = useState(false)
+  const [copiedCmd, setCopiedCmd] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -124,8 +128,8 @@ export function Transcript({
   const chat = useChat(sessionId)
 
   const reload = useCallback(() => {
-    api.session(sessionId).then(setDetail).catch((e) => setLoadErr((e as Error).message))
-  }, [sessionId])
+    api.session(sessionId, listed?.provider).then(setDetail).catch((e) => setLoadErr((e as Error).message))
+  }, [sessionId, listed?.provider])
 
   useEffect(() => {
     setDetail(null)
@@ -245,9 +249,13 @@ export function Transcript({
             />
           ) : (
             <h2
-              className={s.live ? undefined : 'editable'}
-              title={s.live ? '运行中的会话不能改名' : '点击重命名'}
-              onClick={() => { if (!s.live) setEditingTitle(true) }}
+              className={s.live || !s.capabilities.rename ? undefined : 'editable'}
+              title={
+                s.live ? '运行中的会话不能改名'
+                  : !s.capabilities.rename ? `${s.providerName} 暂不支持改名`
+                  : '点击重命名'
+              }
+              onClick={() => { if (!s.live && s.capabilities.rename) setEditingTitle(true) }}
             >
               {s.title}
             </h2>
@@ -269,6 +277,7 @@ export function Transcript({
           </button>
         </div>
         <div className="toolbar">
+          <span className="badge">{s.providerName}</span>
           {s.live && <span className="badge live">终端占用中</span>}
           {useVirtual && <span className="badge">虚拟滚动 {visible.length} 条</span>}
           <button className="icon-btn" onClick={() => setShowMeta(!showMeta)}>
@@ -339,6 +348,32 @@ export function Transcript({
         </div>
       </div>
 
+      {!s.capabilities.resume ? (
+        <div className="composer">
+          <div className="resume-hint">
+            <div>
+              <strong>{s.providerName}</strong> 的会话只能在终端里继续 ——
+              Web 内续聊需要接管该 CLI 的权限审批协议，目前只有 Claude Code 实现并验证过。
+            </div>
+            {s.resumeCommand && (
+              <button
+                className="resume-cmd"
+                title="点击复制"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(s.resumeCommand).then(
+                    () => setCopiedCmd(true),
+                    () => { /* 无剪贴板权限时静默 */ },
+                  )
+                  setTimeout(() => setCopiedCmd(false), 1400)
+                }}
+              >
+                {copiedCmd ? '✓ 已复制' : `$ ${s.resumeCommand}`}
+              </button>
+            )}
+            <div className="mono-dim">工作目录：{s.cwd}</div>
+          </div>
+        </div>
+      ) : (
       <div className="composer">
         {chat.error && (
           <div className="notice" onClick={chat.clearError} style={{ cursor: 'pointer' }}>
@@ -386,6 +421,8 @@ export function Transcript({
           </div>
         </div>
       </div>
+
+      )}
 
       {chat.approvals.length > 0 && (
         <ApprovalDialog

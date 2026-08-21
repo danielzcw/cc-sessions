@@ -6,7 +6,7 @@ import { TitleEditor } from './TitleEditor.js'
 type Sort = 'recent' | 'cost' | 'size'
 
 export function SessionList({
-  sessions, currentId, onPick, onDelete, onRename, showPath,
+  sessions, currentId, onPick, onDelete, onRename, showPath, showProvider,
 }: {
   sessions: SessionSummary[]
   currentId: string | null
@@ -15,6 +15,8 @@ export function SessionList({
   onRename: (s: SessionSummary, title: string) => void
   /** 未按项目筛选时才显示路径 —— 筛选后每行都一样，纯噪音 */
   showPath: boolean
+  /** 混合多个 CLI 时才显示来源徽标 */
+  showProvider: boolean
 }) {
   const [sort, setSort] = useState<Sort>('recent')
   const [editing, setEditing] = useState<string | null>(null)
@@ -69,13 +71,18 @@ export function SessionList({
               ) : (
                 <>
                   <span>{s.title}</span>
-                  {s.live && <span className="badge live">运行中</span>}
+                  {showProvider && <span className="badge prov">{s.providerName}</span>}
+              {s.live && <span className="badge live">运行中</span>}
                   {s.hasBranches && <span className="badge branch">分支</span>}
                   {s.titleSource === 'custom' && <span className="badge">自定义</span>}
                   <button
                     className="sess-rename"
-                    title={s.live ? '运行中的会话不能改名' : '重命名'}
-                    disabled={s.live}
+                    title={
+                      s.live ? '运行中的会话不能改名'
+                        : !s.capabilities.rename ? `${s.providerName} 暂不支持改名`
+                        : '重命名'
+                    }
+                    disabled={s.live || !s.capabilities.rename}
                     onClick={(e) => { e.stopPropagation(); setEditing(s.sessionId) }}
                   >
                     ✎
@@ -85,7 +92,7 @@ export function SessionList({
               <button
                 className="sess-del"
                 title={s.live ? '运行中的会话不能删除' : '删除会话（可撤销）'}
-                disabled={s.live}
+                disabled={s.live || !s.capabilities.delete}
                 onClick={(e) => { e.stopPropagation(); onDelete(s) }}
                 style={editing === s.sessionId ? { display: 'none' } : undefined}
               >

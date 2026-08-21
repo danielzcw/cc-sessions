@@ -6,8 +6,10 @@ import { Transcript } from './components/Transcript.js'
 import { SearchView } from './components/SearchView.js'
 import { StatsView } from './components/StatsView.js'
 import { NewSessionDialog } from './components/NewSessionDialog.js'
+import { ProviderSettings } from './components/ProviderSettings.js'
+import type { ProviderRuntimeInfo } from '../shared/provider.js'
 
-type Tab = 'sessions' | 'search' | 'stats' | 'trash'
+type Tab = 'sessions' | 'search' | 'stats' | 'trash' | 'providers'
 
 type Toast = { kind: 'undo'; entry: TrashEntry } | { kind: 'error'; text: string } | null
 
@@ -23,21 +25,29 @@ export function App() {
   const [toast, setToast] = useState<Toast>(null)
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [trashItems, setTrashItems] = useState<TrashEntry[]>([])
+  const [providers, setProviders] = useState<ProviderRuntimeInfo[]>([])
+  /** null = 全部 CLI */
+  const [provider, setProvider] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   const loadProjects = useCallback(() => {
-    api.projects()
+    api.projects(provider ?? undefined)
       .then((r) => { setProjects(r.projects); setClaudeHome(r.claudeHome) })
       .catch((e) => setErr((e as Error).message))
-  }, [])
+  }, [provider])
 
   useEffect(loadProjects, [loadProjects])
 
+  const loadProviders = useCallback(() => {
+    api.providers().then((r) => setProviders(r.providers)).catch(() => setProviders([]))
+  }, [])
+  useEffect(loadProviders, [loadProviders])
+
   const loadSessions = useCallback(() => {
-    api.sessions(cwd ?? undefined)
+    api.sessions(cwd ?? undefined, provider ?? undefined)
       .then((r) => setSessions(r.sessions))
       .catch((e) => setErr((e as Error).message))
-  }, [cwd])
+  }, [cwd, provider])
 
   useEffect(loadSessions, [loadSessions])
 
@@ -129,7 +139,7 @@ export function App() {
   const totalSessions = projects.reduce((a, p) => a + p.sessionCount, 0)
 
   return (
-    <div className={`app${tab === 'stats' || tab === 'trash' ? ' wide-detail' : ''}`}>
+    <div className={`app${['stats', 'trash', 'providers'].includes(tab) ? ' wide-detail' : ''}`}>
       <aside className="pane pane-sidebar">
         <div className="brand">
           <span className="brand-dot" />
@@ -141,11 +151,33 @@ export function App() {
 
         <button className="btn new-session" onClick={() => setCreating(true)}>＋ 新建会话</button>
 
+        {providers.filter((p) => p.enabled).length > 1 && (
+          <div className="prov-switch">
+            <button
+              className={provider === null ? 'on' : ''}
+              onClick={() => { setProvider(null); setCurrent(null) }}
+            >全部</button>
+            {providers.filter((p) => p.enabled).map((p) => (
+              <button
+                key={p.id}
+                className={provider === p.id ? 'on' : ''}
+                style={provider === p.id && p.color ? { borderColor: p.color, color: p.color } : undefined}
+                onClick={() => { setProvider(p.id); setCurrent(null) }}
+                title={`${p.root}（${p.sessionCount} 个会话）`}
+              >
+                {p.name}
+                <span className="n">{p.sessionCount}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="nav-tabs">
           <button className={tab === 'sessions' ? 'on' : ''} onClick={() => setTab('sessions')}>会话</button>
           <button className={tab === 'search' ? 'on' : ''} onClick={() => setTab('search')}>搜索</button>
           <button className={tab === 'stats' ? 'on' : ''} onClick={() => setTab('stats')}>统计</button>
           <button className={tab === 'trash' ? 'on' : ''} onClick={() => setTab('trash')}>回收站</button>
+          <button className={tab === 'providers' ? 'on' : ''} onClick={() => setTab('providers')}>来源</button>
         </div>
 
         <div className="pane-body">
@@ -181,10 +213,10 @@ export function App() {
         </div>
       </aside>
 
-      {tab !== 'stats' && tab !== 'trash' && (
+      {!['stats', 'trash', 'providers'].includes(tab) && (
         <section className="pane pane-list">
           {tab === 'search'
-            ? <SearchView scopeCwd={cwd} onOpen={openSession} />
+            ? <SearchView scopeCwd={cwd} provider={provider} onOpen={openSession} />
             : <SessionList
                 sessions={sessions}
                 currentId={current}
@@ -192,13 +224,16 @@ export function App() {
                 onDelete={askDelete}
                 onRename={(s, t) => void renameSession(s, t)}
                 showPath={cwd === null}
+                showProvider={provider === null}
               />}
         </section>
       )}
 
       <main className="pane pane-detail">
         {err && <div className="notice" style={{ margin: 10 }}>{err}</div>}
-        {tab === 'trash'
+        {tab === 'providers'
+          ? <ProviderSettings onChanged={() => { loadProviders(); loadProjects(); loadSessions() }} />
+          : tab === 'trash'
           ? <div className="pane-body">
               <div className="stats" style={{ paddingTop: 16 }}>
                 <h3 className="sec">回收站 · {trashItems.length}</h3>
@@ -225,9 +260,15 @@ export function App() {
               </div>
             </div>
           : tab === 'stats'
-          ? <StatsView />
+          ? <StatsView provider={provider} />
           : current
-            ? <Transcript key={current} sessionId={current} onNavigate={openSession} onRenamed={loadSessions} />
+            ? <Transcript
+                key={current}
+                sessionId={current}
+                sessions={sessions}
+                onNavigate={openSession}
+                onRenamed={loadSessions}
+              />
             : <div className="empty">
                 从左侧选一个会话开始<br />
                 <span className="mono-dim">

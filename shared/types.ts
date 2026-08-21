@@ -91,6 +91,13 @@ export type ViewMessage = {
 }
 
 export type SessionSummary = {
+  /** 来自哪个 CLI */
+  provider: string
+  providerName: string
+  /** 该 provider 支持哪些操作，UI 据此显示/禁用按钮 */
+  capabilities: { resume: boolean; rename: boolean; delete: boolean }
+  /** 在终端里继续该会话的命令（已填好 id/cwd），provider 未提供则为空串 */
+  resumeCommand: string
   sessionId: string
   projectDir: string
   cwd: string
@@ -114,6 +121,8 @@ export type SessionSummary = {
 export type ProjectSummary = {
   /** 归一化后的 cwd，作为分组主键 */
   cwd: string
+  /** 该目录下出现过哪些 CLI */
+  providers: string[]
   name: string
   /** 同一 cwd 可能对应多个磁盘目录（大小写/编码差异） */
   projectDirs: string[]
@@ -140,6 +149,7 @@ export type BranchInfo = {
 
 export type SearchHit = {
   sessionId: string
+  provider: string
   cwd: string
   title: string
   ts: string | null

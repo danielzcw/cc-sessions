@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -6,7 +7,50 @@ export const PROJECTS_DIR = path.join(CLAUDE_HOME, 'projects')
 export const HISTORY_FILE = path.join(CLAUDE_HOME, 'history.jsonl')
 /** 每个正在运行的 CLI 进程会在这里留一个 <pid>.json */
 export const LIVE_SESSIONS_DIR = path.join(CLAUDE_HOME, 'sessions')
-export const DATA_DIR = path.join(CLAUDE_HOME, 'cc-sessions')
+/**
+ * 本工具自己的数据目录。
+ *
+ * 早期放在 ~/.claude/cc-sessions 下，但现在要管多个 CLI 的会话（codex / omp / 自定义），
+ * 寄居在 claude 的配置目录里名不正言不顺，因此移到 ~/.cc-sessions，并自动迁移旧目录。
+ */
+export const DATA_DIR = process.env.CCS_DATA_DIR || path.join(os.homedir(), '.cc-sessions')
+const LEGACY_DATA_DIR = path.join(CLAUDE_HOME, 'cc-sessions')
+
+/**
+ * 迁移旧数据目录。
+ *
+ * 用合并而不是整体 rename：db.ts 在 import 阶段就会把新目录建出来，
+ * 等到能调用本函数时「新目录不存在」的前提早就不成立了。索引本身可以重建，
+ * 真正不能丢的是回收站里的会话。
+ */
+export function migrateLegacyDataDir(): string[] {
+  const moved: string[] = []
+  try {
+    if (!fs.existsSync(LEGACY_DATA_DIR)) return moved
+    const legacyTrash = path.join(LEGACY_DATA_DIR, 'trash')
+    const newTrash = path.join(DATA_DIR, 'trash')
+    if (fs.existsSync(legacyTrash)) {
+      fs.mkdirSync(newTrash, { recursive: true })
+      for (const f of fs.readdirSync(legacyTrash)) {
+        const from = path.join(legacyTrash, f)
+        const to = path.join(newTrash, f)
+        if (fs.existsSync(to)) continue
+        fs.renameSync(from, to)
+        moved.push(f)
+      }
+    }
+    // 旧索引不搬，schema 已变且能秒级重建；清掉避免留下误导性残留
+    for (const f of ['index.db', 'index.db-shm', 'index.db-wal']) {
+      const p2 = path.join(LEGACY_DATA_DIR, f)
+      if (fs.existsSync(p2)) fs.rmSync(p2, { force: true })
+    }
+    fs.rmSync(legacyTrash, { recursive: true, force: true })
+    fs.rmdirSync(LEGACY_DATA_DIR)
+  } catch {
+    // 迁移失败不该挡住启动，最坏情况是回收站需要手动搬
+  }
+  return moved
+}
 export const DB_FILE = path.join(DATA_DIR, 'index.db')
 /** 删除的会话先移到这里，可撤销；不做硬删除，历史记录丢了没法恢复 */
 export const TRASH_DIR = path.join(DATA_DIR, 'trash')
@@ -51,6 +95,20 @@ export function tildify(p: string): string {
  */
 export function isValidSessionId(id: string): boolean {
   return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)
+}
+
+/**
+ * 会话 id 是否可安全拼进路径。
+ *
+ * 内置的三个 CLI 都用 UUID，但用户自定义的 provider 可能用文件名当 id，
+ * 所以不能一律要求 UUID。这里只保证「不含路径分隔符、不含 ..」，
+ * 配合调用处的 assertContained 形成双层防护。
+ */
+export function isSafeSessionId(id: string): boolean {
+  if (!id || id.length > 200) return false
+  if (id.includes('/') || id.includes('\\') || id.includes('..')) return false
+  if (id.startsWith('.')) return false
+  return /^[A-Za-z0-9][A-Za-z0-9._@-]*$/.test(id)
 }
 
 /**

@@ -20,13 +20,14 @@ function Bars({ rows, unit }: { rows: StatsBucket[]; unit: 'cost' | 'tokens' }) 
   )
 }
 
-export function StatsView() {
+export function StatsView({ provider }: { provider: string | null }) {
   const [s, setS] = useState<StatsResponse | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
-    api.stats().then(setS).catch((e) => setErr((e as Error).message))
-  }, [])
+    setS(null)
+    api.stats(provider ?? undefined).then(setS).catch((e) => setErr((e as Error).message))
+  }, [provider])
 
   if (err) return <div className="empty">读取统计失败：{err}</div>
   if (!s) return <div className="empty"><span className="spin" /></div>

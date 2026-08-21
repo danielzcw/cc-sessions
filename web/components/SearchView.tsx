@@ -16,9 +16,10 @@ function Snippet({ text }: { text: string }) {
 }
 
 export function SearchView({
-  scopeCwd, onOpen,
+  scopeCwd, provider, onOpen,
 }: {
   scopeCwd: string | null
+  provider: string | null
   onOpen: (sessionId: string) => void
 }) {
   const [q, setQ] = useState('')
@@ -34,13 +35,13 @@ export function SearchView({
     if (!query) { setHits([]); return }
     setBusy(true)
     const t = setTimeout(() => {
-      api.search(query, scoped && scopeCwd ? scopeCwd : undefined)
+      api.search(query, scoped && scopeCwd ? scopeCwd : undefined, provider ?? undefined)
         .then((r) => setHits(r.hits))
         .catch(() => setHits([]))
         .finally(() => setBusy(false))
     }, 220)
     return () => clearTimeout(t)
-  }, [q, scoped, scopeCwd])
+  }, [q, scoped, scopeCwd, provider])
 
   return (
     <>
@@ -69,7 +70,7 @@ export function SearchView({
             <div className="hit-title">{h.title}</div>
             <Snippet text={h.snippet} />
             <div className="hit-meta">
-              {h.role === 'user' ? '👤' : '🤖'} {fmtTime(h.ts)} · {h.cwd.replace(/^\/Users\/[^/]+/, '~')}
+              {h.role === 'user' ? '👤' : '🤖'} {fmtTime(h.ts)} · {h.provider} · {h.cwd.replace(/^\/Users\/[^/]+/, '~')}
             </div>
           </button>
         ))}

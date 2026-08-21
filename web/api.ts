@@ -1,6 +1,8 @@
 import type {
   ApprovalDecision, ProjectSummary, SearchHit, SessionDetail, SessionSummary, StatsResponse, ViewMessage,
 } from '../shared/types.js'
+import type { ProviderConfig, ProviderRuntimeInfo } from '../shared/provider.js'
+import type { ProbeResult } from '../server/providers/probe.js'
 
 export type TrashEntry = {
   sessionId: string
@@ -15,6 +17,18 @@ async function get<T>(url: string): Promise<T> {
   const r = await fetch(url)
   if (!r.ok) throw new Error(`${r.status} ${await r.text().catch(() => '')}`.slice(0, 200))
   return (await r.json()) as T
+}
+
+async function put<T>(url: string, body: unknown): Promise<T> {
+  const r = await fetch(url, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const text = await r.text()
+  const json = text ? (JSON.parse(text) as T & { error?: string }) : ({} as T)
+  if (!r.ok) throw new Error((json as { error?: string }).error ?? `HTTP ${r.status}`)
+  return json
 }
 
 async function patch<T>(url: string, body: unknown): Promise<T> {
@@ -49,14 +63,28 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
   return json
 }
 
+/** provider 维度的查询参数拼接 */
+function pq(params: Record<string, string | undefined>): string {
+  const q = Object.entries(params)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+  return q.length ? '?' + q.join('&') : ''
+}
+
 export const api = {
-  projects: () => get<{ projects: ProjectSummary[]; claudeHome: string }>('/api/projects'),
-  sessions: (cwd?: string) =>
-    get<{ sessions: SessionSummary[] }>('/api/sessions' + (cwd ? `?cwd=${encodeURIComponent(cwd)}` : '')),
-  session: (id: string) => get<SessionDetail>(`/api/sessions/${id}`),
-  search: (q: string, cwd?: string) =>
-    get<{ hits: SearchHit[] }>(`/api/search?q=${encodeURIComponent(q)}` + (cwd ? `&cwd=${encodeURIComponent(cwd)}` : '')),
-  stats: () => get<StatsResponse>('/api/stats'),
+  providers: () => get<{ providers: ProviderRuntimeInfo[]; configPath: string }>('/api/providers'),
+  saveProvider: (cfg: ProviderConfig) => put<{ ok: true }>(`/api/providers/${cfg.id}`, cfg),
+  deleteProvider: (id: string) => del<{ ok: true }>(`/api/providers/${id}`),
+  probeProvider: (cfg: ProviderConfig) => post<ProbeResult>('/api/providers/probe', cfg),
+  projects: (provider?: string) =>
+    get<{ projects: ProjectSummary[]; claudeHome: string }>('/api/projects' + pq({ provider })),
+  sessions: (cwd?: string, provider?: string) =>
+    get<{ sessions: SessionSummary[] }>('/api/sessions' + pq({ cwd, provider })),
+  session: (id: string, provider?: string) =>
+    get<SessionDetail>(`/api/sessions/${id}` + pq({ provider })),
+  search: (q: string, cwd?: string, provider?: string) =>
+    get<{ hits: SearchHit[] }>('/api/search' + pq({ q, cwd, provider })),
+  stats: (provider?: string) => get<StatsResponse>('/api/stats' + pq({ provider })),
   rescan: () => post<{ scanned: number; reindexed: number; removed: number; ms: number }>('/api/rescan'),
   send: (id: string, text: string) => post<{ ok: true }>(`/api/chat/${id}/send`, { text }),
   interrupt: (id: string) => post<{ ok: true }>(`/api/chat/${id}/interrupt`),

@@ -1,8 +1,8 @@
 # cc-sessions
 
-Claude Code CLI 历史会话管理器。按项目分组浏览、全文搜索、分支树与分支对比、成本看板、
-会话删除（回收站可还原），支持**直接在 Web 里续聊或新建会话**（带工具权限审批弹窗），
-长会话虚拟滚动。
+多 CLI 会话管理器。统一浏览 **Claude Code / Codex / omp** 的历史会话，可自由切换来源，
+也能**在页面上配置新的 CLI**（无需改代码）。按项目分组、全文搜索、分支对比、成本看板、
+删除与还原、会话改名；Claude Code 还支持**直接在 Web 里续聊或新建会话**（带权限审批弹窗）。
 
 ## 前置要求（macOS）
 
@@ -46,6 +46,64 @@ CLI 自动升级后有可能失效（本项目开发期间 CLI 就从 2.1.223 �
 
 ---
 
+## 支持的 CLI
+
+| CLI | 会话位置 | 记录形态 | 续聊 |
+|---|---|---|---|
+| Claude Code | `~/.claude/projects/<cwd>/` | `type=user/assistant` | ✅ Web 内 |
+| Codex | `~/.codex/sessions/Y/M/D/rollout-*` | `{timestamp,type,payload}` | 终端 `codex resume` |
+| omp | `~/.omp/agent/sessions/<cwd>/` | `{type,id,parentId,message}` | 终端 `omp --resume` |
+| 自定义 | 页面上配 | 规则描述 | 视 CLI 而定 |
+
+**codex 与 omp 没有专用代码**，它们就是两份声明式规则配置（`server/providers/builtins.ts`），
+和你在页面上添加的 CLI 走同一个引擎。这样 DSL 的表达力被真实格式验证过 ——
+撑不住 codex 的规则也撑不住别人的 CLI。
+
+只有 Claude Code 用专用解析器：它需要 tool_result 回填、`/rewind` 分支树、
+`custom-title` 写回，这些超出声明式规则的范围。
+
+### 在页面上添加一个 CLI
+
+「来源」页 →「添加自定义 CLI」，填一份规则配置，**先点「试跑」**看真实解析结果再保存：
+
+```jsonc
+{
+  "id": "my-cli", "name": "My CLI", "enabled": true,
+  "kind": "generic-jsonl",
+  "root": "~/.my-cli/sessions",     // 会话根目录
+  "glob": "*/*.jsonl",              // 相对 root 的匹配，支持 * 与 **
+  "sessionId": { "from": "filename", "filenameRegex": "_([0-9a-f-]{36})$" },
+  "cwd":   { "paths": ["cwd"] },    // 点号路径，[] 展开数组
+  "title": { "paths": ["title"] },
+  "rules": [
+    { "when": [{ "path": "type", "equals": "message" }],
+      "emit": "text", "rolePath": "message.role",
+      "textPaths": ["message.content[].text", "message.content"] }
+  ],
+  "capabilities": { "resume": false, "rename": false, "delete": true },
+  "resumeCommand": "my-cli resume {id}"
+}
+```
+
+引擎对每条记录**依次尝试所有规则并累积产出**，而不是首条命中即停 ——
+omp 的一条 message 里 `content[]` 同时混着 text / thinking / toolCall，
+首条命中就会丢内容。
+
+内置项的规则以代码为准，只保存你改过的字段（开关、根目录、名称、颜色、续聊命令），
+这样 CLI 改格式时更新代码即可生效，不会被旧配置盖住。
+
+### 配规则时踩过的坑
+
+- **codex 的 `event_msg` 会把对话再发一遍**（某会话 `response_item` 16 条 vs `event_msg` 85 条），
+  规则必须同时限定 `type=response_item`，否则全量重复
+- **codex 的 `reasoning.summary` 是空数组**，真内容在 `encrypted_content` 里读不到，所以不取
+- **omp 的 user 消息 `content` 是纯字符串**，assistant 是对象数组 → `textPaths` 两种都要给
+- **文本提取只认字符串**：若把对象数组 JSON 化当正文，气泡里会出现
+  `{"type":"thinking",...}` 这种原始结构
+- **工具块必须有真实工具名才产出**，否则 omp 的 tool 规则会给每条纯文本消息挂一个空工具块
+- omp 的子 agent 会话嵌在 `<父会话id>/<Agent>.jsonl`，`*/*.jsonl` 正好排除掉它们
+  （想单独浏览就再配一个 `*/*/*.jsonl` 的来源）
+
 ## 架构
 
 ```
@@ -54,7 +112,8 @@ web/            Vite + React
   components/   Blocks(折叠渲染+diff) / Transcript(虚拟滚动) / SessionList / SearchView
                 StatsView / ApprovalDialog / NewSessionDialog / BranchDiff
 server/         Hono 单进程
-  parser.ts     jsonl 事件日志 → 气泡视图模型（本项目的核心）
+  providers/    builtins(内置规则) / generic(规则引擎) / registry(配置读写) / probe(试跑)
+  parser.ts     Claude Code 专用解析器：tool_result 回填、分支树
   db.ts         node:sqlite + FTS5，增量索引与搜索
   scanner.ts    按 mtime 增量扫描 + 活跃会话探测
   runner.ts     spawn claude CLI，双向 stream-json
@@ -67,7 +126,7 @@ shared/diff.ts  LCS 行级 diff（Edit 改动渲染与分支对比共用）
 
 | 能力 | 来源 | 原因 |
 |---|---|---|
-| 列表 / 搜索 / 回看 | 直接解析 `~/.claude/projects/**/*.jsonl` | CLI **没有**非交互的会话列表命令。`-r/--resume` 不带参数是交互式 TUI picker，`claude agents --json` 只管后台 agent |
+| 列表 / 搜索 / 回看 | 直接解析各 CLI 的会话 jsonl | CLI **没有**非交互的会话列表命令。`-r/--resume` 不带参数是交互式 TUI picker，`claude agents --json` 只管后台 agent |
 | 续聊 | `spawn claude -p --resume <id>` | 复用 CLI 自身的鉴权、hooks、MCP、skills，行为与终端一致 |
 | 活跃检测 | `~/.claude/sessions/<pid>.json` + `ps` | 判断哪些会话不能 resume |
 
@@ -255,8 +314,30 @@ runner 为了支持多轮对话会让子进程一直挂着，它写的 `~/.claud
 写成 `232px 0 1fr`（保留中间列宽度为 0）会让 `<main>` 落进那个 0 宽度的列 ——
 DOM 里内容齐全，页面却整片空白，非常难查。
 
+## 能力位
+
+每个 provider 声明自己支持什么，UI 据此显示/禁用按钮，**服务端也会拒绝**
+（前端隐藏按钮不算防护）：
+
+- `resume`：能否在 Web 内续聊。目前只有 Claude Code —— 续聊要接管该 CLI 的权限审批协议，
+  其他 CLI 未实现也未验证，界面上直接给出终端命令（点击复制）
+- `rename`：改标题需要 provider 支持写回，Claude Code 用 `custom-title` 记录
+- `delete`：移入回收站，与格式无关，全部支持
+- 「运行中」检测读 `~/.claude/sessions` 的 pid 文件，只对 Claude Code 有意义
+
+成本统计只有 Claude Code 有数据（它的 jsonl 里带 `usage`），codex / omp 记 0。
+
+## 数据目录
+
+`~/.cc-sessions/`（索引 + 回收站 + `providers.json`）。
+
+早期在 `~/.claude/cc-sessions/`，现在要管多个 CLI，寄居在 claude 的配置目录下名不正言不顺，
+所以移了出来并自动迁移回收站。索引会自动重建，schema 变更直接 drop 重建，不写迁移逻辑。
+
 ## 已知限制
 
+- 只有 Claude Code 支持 Web 内续聊，其余给终端命令
+- 通用规则引擎不做 tool_use/result 配对与分支检测（各 CLI 关联字段与 rewind 语义差异太大）
 - 分支对比只支持「非主干分支 ↔ 主干」两两比，未做任意两条分支的自由组合
 - 新建会话不能指定 model / permission-mode，走 CLI 默认值
 - 改动 `parser.ts` 或计价逻辑后需 `POST /api/rescan?full=1` 强制全量重解析，

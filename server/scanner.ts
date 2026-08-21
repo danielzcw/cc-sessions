@@ -1,14 +1,28 @@
 import fs from 'node:fs'
+import type { Dirent } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
-import { PROJECTS_DIR, LIVE_SESSIONS_DIR, TRASH_DIR, assertContained, isValidSessionId, normalizeCwd } from './paths.js'
+import { PROJECTS_DIR, LIVE_SESSIONS_DIR, TRASH_DIR, assertContained, isSafeSessionId, normalizeCwd } from './paths.js'
 import { foldSession, parseLines } from './parser.js'
 import type { ParsedSession } from './parser.js'
-import { needsReindex, removeSession, saveSession, rebuildDailyStats, type SessionRow } from './db.js'
+import {
+  allSessions, indexedProviderIds, needsReindex, rebuildDailyStats, removeProviderSessions,
+  removeSession, repairMissingCwd, resetStamps, saveSession, type SessionRow,
+} from './db.js'
 import type { ViewMessage } from '../shared/types.js'
+import type { ProviderConfig } from '../shared/provider.js'
+import { enabledProviders, expandTilde, listProviders } from './providers/registry.js'
+import { foldGeneric, sessionIdFromFile } from './providers/generic.js'
 
-export type ScanResult = { scanned: number; reindexed: number; removed: number; ms: number }
+export type ScanResult = {
+  scanned: number
+  reindexed: number
+  removed: number
+  ms: number
+  /** 每个 provider 匹配到的文件数，便于在界面上定位「为什么某个 CLI 没会话」 */
+  perProvider: Record<string, number>
+}
 
 function titleOf(p: ParsedSession): { title: string; source: 'custom' | 'ai' | 'prompt' } {
   if (p.customTitle) return { title: p.customTitle, source: 'custom' }
@@ -33,27 +47,51 @@ function ftsRowsOf(messages: ViewMessage[]): { body: string; role: string; ts: s
   return out
 }
 
-async function indexFile(projectDir: string, file: string): Promise<boolean> {
-  const full = path.join(PROJECTS_DIR, projectDir, file)
-  const sessionId = file.replace(/\.jsonl$/, '')
+/**
+ * 索引单个会话文件。
+ * claude-code 走专用解析器（需要 tool_result 回填与分支树），其余走规则引擎。
+ */
+async function indexFile(cfg: ProviderConfig, absPath: string, rootAbs: string): Promise<boolean> {
   let st: fs.Stats
   try {
-    st = await fsp.stat(full)
+    st = await fsp.stat(absPath)
   } catch {
     return false
   }
-  if (!needsReindex(sessionId, st.mtimeMs, st.size)) return false
 
-  const text = await fsp.readFile(full, 'utf8')
-  const records = parseLines(text.split('\n'))
-  if (records.length === 0) return false
-  const parsed = foldSession(records, sessionId)
+  const sessionId = cfg.kind === 'builtin-claude'
+    ? path.basename(absPath).replace(/\.jsonl$/, '')
+    : sessionIdFromFile(cfg, absPath)
 
-  // cwd 一律取自记录内容 —— 目录名做过 `/`和`.`→`-` 替换，不可逆
+  if (!needsReindex(cfg.id, sessionId, st.mtimeMs, st.size)) return false
+
+  const text = await fsp.readFile(absPath, 'utf8')
+  const lines = text.split('\n')
+  if (lines.length === 0) return false
+
+  let parsed: ParsedSession
+  if (cfg.kind === 'builtin-claude') {
+    const records = parseLines(lines)
+    if (records.length === 0) return false
+    parsed = foldSession(records, sessionId)
+  } else {
+    const records: unknown[] = []
+    for (const l of lines) {
+      const t = l.trim()
+      if (!t) continue
+      try { records.push(JSON.parse(t)) } catch { /* 写入中途被读到，末行截断是正常的 */ }
+    }
+    if (records.length === 0) return false
+    parsed = foldGeneric(records, sessionId, cfg)
+  }
+
+  // cwd 一律取自记录内容 —— 目录名普遍做过不可逆的字符替换
+  const projectDir = path.relative(rootAbs, path.dirname(absPath)) || '.'
   const cwd = parsed.cwd ?? projectDir
   const { title, source } = titleOf(parsed)
 
   const row: SessionRow = {
+    provider: cfg.id,
     session_id: sessionId,
     project_dir: projectDir,
     cwd,
@@ -79,99 +117,168 @@ async function indexFile(projectDir: string, file: string): Promise<boolean> {
   return true
 }
 
+/** 把 glob（只支持 `*` 与 `**`）编译成正则，用于匹配相对 root 的路径 */
+export function globToRegExp(glob: string): RegExp {
+  let re = ''
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        // ** 跨目录；后面紧跟 / 时把这段斜杠也吞掉，好让 `**/x` 能匹配顶层的 x
+        i++
+        if (glob[i + 1] === '/') i++
+        re += '(?:.*/)?'
+      } else {
+        re += '[^/]*'
+      }
+    } else if ('\\^$.|?+()[]{}'.includes(c)) {
+      re += '\\' + c
+    } else {
+      re += c
+    }
+  }
+  return new RegExp('^' + re + '$')
+}
+
+/** 递归列出 root 下匹配 glob 的文件（相对路径） */
+async function listMatching(rootAbs: string, glob: string): Promise<string[]> {
+  const re = globToRegExp(glob)
+  const out: string[] = []
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > 8) return
+    let entries: Dirent[]
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      const abs = path.join(dir, e.name)
+      if (e.isDirectory()) {
+        await walk(abs, depth + 1)
+      } else if (e.isFile()) {
+        const rel = path.relative(rootAbs, abs)
+        if (re.test(rel)) out.push(rel)
+      }
+    }
+  }
+  await walk(rootAbs, 0)
+  return out
+}
+
 /**
- * @param force 忽略 mtime 缓存全量重解析。改动 parser/计价逻辑后必须用，
+ * @param force 忽略 mtime 缓存全量重解析。改动解析逻辑或 provider 规则后必须用，
  *              否则旧结果会因为文件没变而一直留在库里。
  */
 export async function scanAll(force = false): Promise<ScanResult> {
   const t0 = Date.now()
   let scanned = 0
   let reindexed = 0
+  /** `${provider}\u0000${sessionId}`，用于清理已删除会话 */
   const seen = new Set<string>()
 
-  if (force) {
-    const { resetStamps } = await import('./db.js')
-    resetStamps()
-  }
+  if (force) resetStamps()
 
-  let dirs: string[]
-  try {
-    dirs = (await fsp.readdir(PROJECTS_DIR, { withFileTypes: true }))
-      .filter((d) => d.isDirectory())
-      .map((d) => d.name)
-  } catch {
-    return { scanned: 0, reindexed: 0, removed: 0, ms: Date.now() - t0 }
-  }
-
-  for (const dir of dirs) {
-    let files: string[]
-    try {
-      files = (await fsp.readdir(path.join(PROJECTS_DIR, dir))).filter((f) => f.endsWith('.jsonl'))
-    } catch {
-      continue
-    }
-    for (const f of files) {
+  const perProvider: Record<string, number> = {}
+  for (const cfg of enabledProviders()) {
+    const rootAbs = expandTilde(cfg.root)
+    if (!fs.existsSync(rootAbs)) continue
+    const files = await listMatching(rootAbs, cfg.glob || '**/*.jsonl')
+    perProvider[cfg.id] = files.length
+    for (const rel of files) {
+      const abs = path.join(rootAbs, rel)
       scanned++
-      seen.add(f.replace(/\.jsonl$/, ''))
+      const sid = cfg.kind === 'builtin-claude'
+        ? path.basename(abs).replace(/\.jsonl$/, '')
+        : sessionIdFromFile(cfg, abs)
+      seen.add(`${cfg.id}\u0000${sid}`)
       try {
-        if (await indexFile(dir, f)) reindexed++
+        if (await indexFile(cfg, abs, rootAbs)) reindexed++
       } catch (e) {
-        console.warn(`[scan] 跳过 ${dir}/${f}:`, (e as Error).message)
+        console.warn(`[scan] 跳过 ${cfg.id}:${rel}:`, (e as Error).message)
       }
     }
   }
 
-  // 清理已被删除的会话
+  // 配置里已经不存在的 provider（被删掉的），整批索引清掉。
+  // 仅「停用」的保留，否则重新启用又要全量重扫。
+  const known = new Set(listProviders().map((p) => p.id))
   let removed = 0
-  const { allSessions } = await import('./db.js')
+  for (const pid of indexedProviderIds()) {
+    if (!known.has(pid)) removed += removeProviderSessions(pid)
+  }
+
+  const active = new Set(enabledProviders().map((p) => p.id))
   for (const row of allSessions()) {
-    if (!seen.has(row.session_id)) {
-      removeSession(row.session_id)
+    if (!active.has(row.provider)) continue
+    if (!seen.has(`${row.provider}\u0000${row.session_id}`)) {
+      removeSession(row.provider, row.session_id)
       removed++
     }
   }
 
   // 必须在全部会话入库后做：回填依赖同目录下的兄弟会话。很便宜，每次都跑。
-  const { repairMissingCwd } = await import('./db.js')
   const repaired = repairMissingCwd()
   if (reindexed || removed || repaired) rebuildDailyStats()
-  return { scanned, reindexed, removed, ms: Date.now() - t0 }
+  return { scanned, reindexed, removed, ms: Date.now() - t0, perProvider }
 }
 
-/** 单个会话的强制重新索引（收到文件变更或聊完一轮后调用） */
-export async function reindexSession(sessionId: string): Promise<void> {
-  if (!isValidSessionId(sessionId)) return
-  let dirs: string[]
-  try {
-    dirs = (await fsp.readdir(PROJECTS_DIR, { withFileTypes: true }))
-      .filter((d) => d.isDirectory()).map((d) => d.name)
-  } catch { return }
-  for (const dir of dirs) {
-    const p = path.join(PROJECTS_DIR, dir, `${sessionId}.jsonl`)
-    if (fs.existsSync(p)) {
-      await indexFile(dir, `${sessionId}.jsonl`)
-      rebuildDailyStats()
-      return
-    }
-  }
-}
+export type LocatedSession = { cfg: ProviderConfig; absPath: string; rootAbs: string }
 
-export async function readSessionFile(sessionId: string): Promise<{ records: ReturnType<typeof parseLines>; projectDir: string } | null> {
-  if (!isValidSessionId(sessionId)) return null
-  let dirs: string[]
-  try {
-    dirs = (await fsp.readdir(PROJECTS_DIR, { withFileTypes: true }))
-      .filter((d) => d.isDirectory()).map((d) => d.name)
-  } catch { return null }
-  for (const dir of dirs) {
-    const p = path.join(PROJECTS_DIR, dir, `${sessionId}.jsonl`)
-    if (fs.existsSync(p)) {
-      const text = await fsp.readFile(p, 'utf8')
-      return { records: parseLines(text.split('\n')), projectDir: dir }
+/**
+ * 在各 provider 的根目录下定位会话文件。
+ * provider 已知时只搜它，否则按启用顺序逐个找（用于只拿到 sessionId 的旧接口）。
+ */
+export async function locateSession(sessionId: string, provider?: string): Promise<LocatedSession | null> {
+  if (!isSafeSessionId(sessionId)) return null
+  const candidates = provider
+    ? enabledProviders().filter((p) => p.id === provider)
+    : enabledProviders()
+  for (const cfg of candidates) {
+    const rootAbs = expandTilde(cfg.root)
+    if (!fs.existsSync(rootAbs)) continue
+    for (const rel of await listMatching(rootAbs, cfg.glob || '**/*.jsonl')) {
+      const abs = path.join(rootAbs, rel)
+      const sid = cfg.kind === 'builtin-claude'
+        ? path.basename(abs).replace(/\.jsonl$/, '')
+        : sessionIdFromFile(cfg, abs)
+      if (sid !== sessionId) continue
+      assertContained(rootAbs, abs)
+      return { cfg, absPath: abs, rootAbs }
     }
   }
   return null
 }
+
+/** 解析出会话内容，自动按 provider 选择解析器 */
+export async function loadParsedSession(
+  sessionId: string,
+  provider?: string,
+): Promise<{ cfg: ProviderConfig; parsed: ParsedSession } | null> {
+  const loc = await locateSession(sessionId, provider)
+  if (!loc) return null
+  const text = await fsp.readFile(loc.absPath, 'utf8')
+  const lines = text.split('\n')
+  if (loc.cfg.kind === 'builtin-claude') {
+    return { cfg: loc.cfg, parsed: foldSession(parseLines(lines), sessionId) }
+  }
+  const records: unknown[] = []
+  for (const l of lines) {
+    const t = l.trim()
+    if (!t) continue
+    try { records.push(JSON.parse(t)) } catch { /* 末行可能截断 */ }
+  }
+  return { cfg: loc.cfg, parsed: foldGeneric(records, sessionId, loc.cfg) }
+}
+
+/** 单个会话的强制重新索引（收到文件变更或聊完一轮后调用） */
+export async function reindexSession(sessionId: string, provider?: string): Promise<void> {
+  const loc = await locateSession(sessionId, provider)
+  if (!loc) return
+  await indexFile(loc.cfg, loc.absPath, loc.rootAbs)
+  rebuildDailyStats()
+}
+
 
 /**
  * 重命名会话：往 jsonl 追加一条 custom-title 记录。
@@ -180,9 +287,9 @@ export async function readSessionFile(sessionId: string): Promise<{ records: Ret
  * 只追加、不重写文件 —— jsonl 本来就是仅追加的事件日志，这是最不具侵入性的写法。
  * 传空字符串表示清除自定义标题，回落到 AI 生成的标题。
  */
-export async function renameSession(sessionId: string, title: string): Promise<void> {
-  if (!isValidSessionId(sessionId)) throw new Error('会话 id 非法')
-  const file = await locateSessionFile(sessionId)
+export async function renameSession(sessionId: string, title: string, provider?: string): Promise<void> {
+  if (!isSafeSessionId(sessionId)) throw new Error('会话 id 非法')
+  const file = await locateSessionFile(sessionId, provider)
   if (!file) throw new Error('会话文件不存在')
   const clean = title.replace(/[\r\n\t]/g, ' ').trim().slice(0, 200)
   const record = JSON.stringify({ type: 'custom-title', customTitle: clean, sessionId }) + '\n'
@@ -205,6 +312,8 @@ export async function renameSession(sessionId: string, title: string): Promise<v
 
 export type TrashEntry = {
   sessionId: string
+  /** 来自哪个 provider —— 还原时要按它的根目录做包含校验 */
+  provider: string
   title: string
   cwd: string
   originalPath: string
@@ -216,16 +325,16 @@ export type TrashEntry = {
  * 删除会话：移到回收站而非 unlink。
  * 会话历史是不可再生的数据，硬删除一旦误操作就没救了。
  */
-export async function trashSession(sessionId: string, title: string, cwd: string): Promise<TrashEntry> {
-  if (!isValidSessionId(sessionId)) throw new Error('会话 id 非法')
-  const src = await locateSessionFile(sessionId)
+export async function trashSession(sessionId: string, title: string, cwd: string, provider = 'claude-code'): Promise<TrashEntry> {
+  if (!isSafeSessionId(sessionId)) throw new Error('会话 id 非法')
+  const src = await locateSessionFile(sessionId, provider)
   if (!src) throw new Error('会话文件不存在')
   await fsp.mkdir(TRASH_DIR, { recursive: true })
 
   const dest = path.join(TRASH_DIR, `${sessionId}.jsonl`)
   const st = await fsp.stat(src)
   const entry: TrashEntry = {
-    sessionId, title, cwd,
+    sessionId, provider, title, cwd,
     originalPath: src,
     deletedAt: new Date().toISOString(),
     sizeBytes: st.size,
@@ -243,7 +352,7 @@ export async function trashSession(sessionId: string, title: string, cwd: string
 
 /** 从回收站还原到原始路径 */
 export async function restoreSession(sessionId: string): Promise<TrashEntry> {
-  if (!isValidSessionId(sessionId)) throw new Error('会话 id 非法')
+  if (!isSafeSessionId(sessionId)) throw new Error('会话 id 非法')
   const metaPath = path.join(TRASH_DIR, `${sessionId}.meta.json`)
   assertContained(TRASH_DIR, metaPath)
   const raw = await fsp.readFile(metaPath, 'utf8').catch(() => null)
@@ -252,9 +361,14 @@ export async function restoreSession(sessionId: string): Promise<TrashEntry> {
   const src = path.join(TRASH_DIR, `${sessionId}.jsonl`)
   if (!fs.existsSync(src)) throw new Error('回收站文件已丢失')
 
-  // originalPath 读自回收站的 meta 文件，属于外部数据 —— 必须限制在会话目录内，
-  // 否则被篡改的 meta 就能把文件还原到任意位置
-  assertContained(PROJECTS_DIR, entry.originalPath)
+  // originalPath 读自回收站的 meta 文件，属于外部数据 —— 必须限制在该 provider 的
+  // 根目录内，否则被篡改的 meta 就能把文件还原到任意位置。
+  // 不能写死 claude 的 projects 目录，否则 codex / omp 的会话根本还原不回去。
+  // 迁移前写入的条目没有 provider 字段，那时只支持 claude-code
+  const providerId = entry.provider || 'claude-code'
+  const owner = enabledProviders().find((p) => p.id === providerId)
+  const allowedRoot = owner ? expandTilde(owner.root) : PROJECTS_DIR
+  assertContained(allowedRoot, entry.originalPath)
 
   // 原目录可能已被清理，重建后再还原
   await fsp.mkdir(path.dirname(entry.originalPath), { recursive: true })
@@ -287,7 +401,7 @@ export async function listTrash(): Promise<TrashEntry[]> {
 
 /** 彻底删除回收站里的一条（不可恢复） */
 export async function purgeTrash(sessionId: string): Promise<void> {
-  if (!isValidSessionId(sessionId)) throw new Error('会话 id 非法')
+  if (!isSafeSessionId(sessionId)) throw new Error('会话 id 非法')
   const jsonl = path.join(TRASH_DIR, `${sessionId}.jsonl`)
   const meta = path.join(TRASH_DIR, `${sessionId}.meta.json`)
   assertContained(TRASH_DIR, jsonl)
@@ -296,18 +410,9 @@ export async function purgeTrash(sessionId: string): Promise<void> {
   await fsp.unlink(meta).catch(() => {})
 }
 
-async function locateSessionFile(sessionId: string): Promise<string | null> {
-  if (!isValidSessionId(sessionId)) return null
-  let dirs: string[]
-  try {
-    dirs = (await fsp.readdir(PROJECTS_DIR, { withFileTypes: true }))
-      .filter((d) => d.isDirectory()).map((d) => d.name)
-  } catch { return null }
-  for (const dir of dirs) {
-    const p = path.join(PROJECTS_DIR, dir, `${sessionId}.jsonl`)
-    if (fs.existsSync(p)) return p
-  }
-  return null
+async function locateSessionFile(sessionId: string, provider?: string): Promise<string | null> {
+  const loc = await locateSession(sessionId, provider)
+  return loc ? loc.absPath : null
 }
 
 /**
