@@ -6,7 +6,8 @@ import { Transcript } from './components/Transcript.js'
 import { SearchView } from './components/SearchView.js'
 import { StatsView } from './components/StatsView.js'
 import { NewSessionDialog } from './components/NewSessionDialog.js'
-import { ProviderSettings } from './components/ProviderSettings.js'
+import { ProviderSettingsInner } from './components/ProviderSettings.js'
+import { CliConfigView } from './components/CliConfigView.js'
 import type { ProviderRuntimeInfo } from '../shared/provider.js'
 import { Icon, type IconName } from './components/Icons.js'
 
@@ -18,7 +19,7 @@ const NAV: [Tab, IconName, string][] = [
   ['search', 'search', '搜索'],
   ['stats', 'chart', '统计'],
   ['trash', 'trash', '回收站'],
-  ['providers', 'gear', '来源'],
+  ['providers', 'gear', '设置'],
 ]
 
 type Toast = { kind: 'undo'; entry: TrashEntry } | { kind: 'error'; text: string } | null
@@ -35,6 +36,8 @@ export function App() {
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [trashItems, setTrashItems] = useState<TrashEntry[]>([])
   const [providers, setProviders] = useState<ProviderRuntimeInfo[]>([])
+  /** 设置中心的子页签 */
+  const [settingsTab, setSettingsTab] = useState<'sources' | 'cli'>('sources')
   /** null = 全部 CLI */
   const [provider, setProvider] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -260,7 +263,23 @@ export function App() {
       <main className="pane pane-detail">
         {err && <div className="notice" style={{ margin: 10 }}>{err}</div>}
         {tab === 'providers'
-          ? <ProviderSettings onChanged={() => { loadProviders(); loadProjects(); loadSessions() }} />
+          ? <div className="pane-body">
+              <div className="stats" style={{ paddingTop: 16 }}>
+                <div className="nav-tabs" style={{ padding: 0, maxWidth: 300, marginBottom: 6 }}>
+                  <button
+                    className={settingsTab === 'sources' ? 'on' : ''}
+                    onClick={() => setSettingsTab('sources')}
+                  >CLI 来源</button>
+                  <button
+                    className={settingsTab === 'cli' ? 'on' : ''}
+                    onClick={() => setSettingsTab('cli')}
+                  >MCP / 技能 / 插件</button>
+                </div>
+                {settingsTab === 'sources'
+                  ? <ProviderSettingsInner onChanged={() => { loadProviders(); loadProjects(); loadSessions() }} />
+                  : <CliConfigView />}
+              </div>
+            </div>
           : tab === 'trash'
           ? <div className="pane-body">
               <div className="stats" style={{ paddingTop: 16 }}>

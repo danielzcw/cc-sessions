@@ -62,6 +62,19 @@ export function resolveClaudeBin(): string | null {
   return null
 }
 
+/** CLI 的默认模型（settings.json 里的 model 字段），不传 --model 时生效 */
+export function readDefaultModel(): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(CLAUDE_HOME, 'settings.json'), 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && 'model' in parsed) {
+      const m = Reflect.get(parsed, 'model')
+      if (typeof m === 'string' && m.trim()) return m.trim()
+    }
+  } catch { /* 没配就是没配 */ }
+  return null
+}
+
 export function runChecks(): Check[] {
   const checks: Check[] = []
 

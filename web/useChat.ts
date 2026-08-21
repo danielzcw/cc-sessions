@@ -121,7 +121,7 @@ export function useChat(sessionId: string | null) {
     }
   }, [sessionId])
 
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (text: string, model?: string | null) => {
     if (!sessionId) return
     // 乐观插入用户气泡，等 CLI 落盘后会被真实记录替换
     setState((s) => ({
@@ -138,7 +138,7 @@ export function useChat(sessionId: string | null) {
       }],
     }))
     try {
-      await api.send(sessionId, text)
+      await api.send(sessionId, text, model)
     } catch (e) {
       setState((s) => ({ ...s, error: (e as Error).message, status: 'idle' }))
     }

@@ -1153,3 +1153,89 @@ h3.sec { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; col
   line-height: 1.6;
 }
 .cli-tag.inapp { color: var(--accent); border-color: var(--accent); }
+
+/* 输入区的模型选择 */
+.model-pick {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 4px;
+  max-width: 190px;
+}
+.model-pick:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+.model-pick:disabled { opacity: 0.5; }
+
+/* ---------- 设置中心：CLI 能力清单 ---------- */
+
+.cfg-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.cfg-cli {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  background: var(--bg-raised);
+}
+.cfg-cli-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.cfg-cli-head b { font-size: 13px; }
+.cfg-paths {
+  margin-left: auto;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.cfg-paths .missing { text-decoration: line-through; opacity: 0.6; }
+.cfg-paths code { font-size: 10.5px; }
+
+.cfg-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.cfg-row:last-of-type { border-bottom: none; }
+.cfg-main { flex: 1; min-width: 0; }
+.cfg-name { font-size: 12.5px; font-weight: 500; }
+.cfg-sub {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cfg-sub.desc {
+  color: var(--text-dim);
+  white-space: normal;
+  line-height: 1.5;
+  margin: 2px 0;
+}
+.cfg-empty { padding: 10px 12px; font-size: 12px; color: var(--text-faint); }
+.cfg-notes {
+  margin: 0;
+  padding: 8px 12px 10px 30px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sunken);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.cfg-notes li { margin: 2px 0; }

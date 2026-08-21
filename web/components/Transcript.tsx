@@ -120,6 +120,11 @@ export function Transcript({
   const [compare, setCompare] = useState<{ a: string; b: string; labelA: string; labelB: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const [copiedCmd, setCopiedCmd] = useState(false)
+  /** null = 跟随 CLI 默认设置（不传 --model） */
+  const [model, setModel] = useState<string | null>(null)
+  const [models, setModels] = useState<{ aliases: string[]; seen: { model: string }[]; fallback: string | null }>(
+    { aliases: [], seen: [], fallback: null },
+  )
   const [editingTitle, setEditingTitle] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -146,6 +151,10 @@ export function Transcript({
   useEffect(() => {
     if (chat.forkedTo && chat.forkedTo !== sessionId) onNavigate(chat.forkedTo)
   }, [chat.forkedTo, sessionId, onNavigate])
+
+  useEffect(() => {
+    api.models().then(setModels).catch(() => { /* 取不到就只显示默认项 */ })
+  }, [])
 
   const historyMessages = useMemo(
     () => (detail ? selectBranch(detail.messages, detail.branches, chosen) : []),
@@ -217,7 +226,7 @@ export function Transcript({
     const t = draft.trim()
     if (!t || chat.status === 'thinking') return
     setDraft('')
-    void chat.send(t)
+    void chat.send(t, model)
     atBottomRef.current = true
     if (taRef.current) taRef.current.style.height = 'auto'
   }
@@ -409,6 +418,25 @@ export function Transcript({
             <span>
               {chat.status === 'thinking' ? '生成中' : chat.status === 'closed' ? '进程已退出（发送会自动重启）' : '就绪'}
             </span>
+            <select
+              className="model-pick"
+              value={model ?? ''}
+              disabled={busy}
+              title={busy ? '生成中不能切换模型' : '切换模型会在下一轮重启 CLI 进程'}
+              onChange={(e) => setModel(e.target.value || null)}
+            >
+              <option value="">默认{models.fallback ? `（${models.fallback}）` : ''}</option>
+              {models.aliases.length > 0 && (
+                <optgroup label="别名（始终指向最新版）">
+                  {models.aliases.map((a) => <option key={a} value={a}>{a}</option>)}
+                </optgroup>
+              )}
+              {models.seen.length > 0 && (
+                <optgroup label="用过的具体版本">
+                  {models.seen.map((m) => <option key={m.model} value={m.model}>{m.model}</option>)}
+                </optgroup>
+              )}
+            </select>
             {chat.lastResult && (
               <span>
                 上轮 {fmtCost(chat.lastResult.costUsd)} · {(chat.lastResult.durationMs / 1000).toFixed(1)}s

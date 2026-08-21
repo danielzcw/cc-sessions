@@ -168,6 +168,16 @@ export function removeProviderSessions(provider: string): number {
   }
 }
 
+/** 索引里真实出现过的模型，按会话数排序 */
+export function modelsSeen(): { model: string; sessions: number }[] {
+  const rows = db.prepare(`
+    select model, count(*) n from sessions
+    where model is not null and model != '' and model != 'unknown'
+    group by model order by n desc
+  `).all()
+  return (rows as unknown as { model: string; n: number }[]).map((r) => ({ model: r.model, sessions: r.n }))
+}
+
 /** 库里出现过的所有 provider id（用于清理已被删除的来源） */
 export function indexedProviderIds(): string[] {
   const rows = db.prepare('select distinct provider from sessions').all()

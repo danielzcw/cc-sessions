@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  allSessions, getSessionRow, projectRows, providerCounts,
+  allSessions, getSessionRow, modelsSeen, projectRows, providerCounts,
   removeProviderSessions, removeSession as removeSessionFromIndex,
   search, stats, type SessionRow,
 } from './db.js'
@@ -25,12 +25,13 @@ import {
   getProvider, listProviders, providerConfigPath, removeProvider,
   upsertProvider, validateProvider, expandTilde,
 } from './providers/registry.js'
-import { preflightOrExit, runChecks } from './preflight.js'
+import { preflightOrExit, readDefaultModel, runChecks } from './preflight.js'
 import type {
   ApprovalDecision, ProjectSummary, SessionDetail, SessionSummary,
 } from '../shared/types.js'
 import type { ProviderConfig, ProviderRuntimeInfo } from '../shared/provider.js'
 import { probeProvider } from './providers/probe.js'
+import { readCliConfigs, setClaudePlugin } from './cli-config.js'
 
 const PORT = Number(process.env.PORT || 5274)
 const HOST = process.env.HOST || '127.0.0.1'
@@ -220,6 +221,41 @@ app.post('/api/providers/probe', async (c) => {
 })
 
 app.get('/api/health', (c) => c.json({ checks: runChecks() }))
+
+// ---------------- 设置中心：各 CLI 的 MCP / 技能 / 插件 ----------------
+
+app.get('/api/cli-config', (c) => c.json({ clis: readCliConfigs() }))
+
+/** 只开放 Claude Code 的插件开关：它是纯 JSON 布尔表，改动可预测 */
+app.post('/api/cli-config/plugin', async (c) => {
+  const body = await c.req.json<{ provider?: string; name?: string; enabled?: boolean }>()
+    .catch(() => ({} as { provider?: string; name?: string; enabled?: boolean }))
+  if (body.provider !== 'claude-code') {
+    return c.json({ error: '目前只支持开关 Claude Code 的插件' }, 400)
+  }
+  if (!body.name) return c.json({ error: '缺少插件名' }, 400)
+  try {
+    setClaudePlugin(body.name, body.enabled === true)
+    return c.json({ ok: true })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+/**
+ * 可选模型。CLI 没有列模型的命令（`claude models` 会被当成 prompt 执行），
+ * 所以别名取自 --help 的文档，再并上索引里真实出现过的模型。
+ */
+app.get('/api/models', (c) => {
+  const aliases = ['opus', 'sonnet', 'fable', 'haiku']
+  const seen = modelsSeen()
+  return c.json({
+    aliases,
+    seen,
+    // settings.json 里的默认值，不传 --model 时就是它
+    fallback: readDefaultModel(),
+  })
+})
 
 app.post('/api/rescan', async (c) => c.json(await scanAll(c.req.query('full') === '1')))
 
@@ -472,10 +508,10 @@ app.post('/api/chat/:id/send', async (c) => {
   if (row2 && !getProvider(row2.provider)?.capabilities.resume) {
     return c.json({ error: `${row2.provider} 会话只能在终端里继续` }, 400)
   }
-  const body = await c.req.json<{ text?: string }>()
+  const body = await c.req.json<{ text?: string; model?: string | null }>()
   const text = (body.text ?? '').trim()
   if (!text) return c.json({ error: '内容为空' }, 400)
-  runners.getOrCreate(id, cwd).send(text)
+  runners.getOrCreate(id, cwd).send(text, body.model)
   return c.json({ ok: true })
 })
 

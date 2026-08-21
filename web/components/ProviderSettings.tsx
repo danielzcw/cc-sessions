@@ -62,7 +62,7 @@ function ProbeView({ result }: { result: ProbeResult }) {
   )
 }
 
-export function ProviderSettings({ onChanged }: { onChanged: () => void }) {
+export function ProviderSettingsInner({ onChanged }: { onChanged: () => void }) {
   const [items, setItems] = useState<ProviderRuntimeInfo[]>([])
   const [configPath, setConfigPath] = useState('')
   const [editing, setEditing] = useState<ProviderConfig | null>(null)
@@ -152,8 +152,7 @@ export function ProviderSettings({ onChanged }: { onChanged: () => void }) {
   }
 
   return (
-    <div className="pane-body">
-      <div className="stats" style={{ paddingTop: 16 }}>
+    <>
         <h3 className="sec">CLI 来源 · {items.length}</h3>
         <p className="mono-dim">
           配置存放于 {configPath}。内置项的解析规则随版本更新，只保留你改过的字段；
@@ -228,7 +227,6 @@ export function ProviderSettings({ onChanged }: { onChanged: () => void }) {
             {probe && <ProbeView result={probe} />}
           </div>
         )}
-      </div>
-    </div>
+    </>
   )
 }

@@ -319,6 +319,38 @@ runner 为了支持多轮对话会让子进程一直挂着，它写的 `~/.claud
 写成 `232px 0 1fr`（保留中间列宽度为 0）会让 `<main>` 落进那个 0 宽度的列 ——
 DOM 里内容齐全，页面却整片空白，非常难查。
 
+## 模型选择
+
+输入区可切模型。CLI **没有列模型的命令**（`claude models` 会被当成 prompt 执行掉），
+所以候选项由两部分组成：`--help` 文档里的别名（opus / sonnet / fable / haiku）
+＋ 索引里真实出现过的具体版本（如 claude-opus-4-7）。默认项跟随
+`~/.claude/settings.json` 的 `model` 字段。
+
+`--model` 只能在进程启动时给，所以切换会**收掉现有子进程让下一轮重开**；
+正在生成时禁止切换，避免打断当前回答。
+
+## 设置中心
+
+侧栏「设置」下分两块：
+
+- **CLI 来源** —— 增删改启停 provider（含试跑）
+- **MCP / 技能 / 插件** —— 各 CLI 的能力清单，带配置文件路径
+
+写回策略保守，只开放**确定安全**的一处：
+
+| 目标 | 位置 | 可写 | 原因 |
+|---|---|---|---|
+| Claude 插件开关 | `settings.json` `enabledPlugins` | ✅ | 纯 JSON 布尔表，改动可预测；写前备份，且拒绝新增不存在的键 |
+| Claude MCP | `~/.claude.json` | 只读 | 那是 CLI 的活动状态文件，增删请用 `claude mcp` |
+| Codex MCP / 插件 | `config.toml` | 只读 | 安全写回 TOML 需要真正的解析器 |
+| 技能 | 各 `skills/` 目录 | 只读 | 技能是目录，「停用」不是标准操作 |
+
+只读项一律把配置路径显在界面上，方便直接编辑。MCP 的 env **只列键名不列值** ——
+配置里常有 token。
+
+技能枚举支持两级目录：`skills/<name>/SKILL.md` 与 `skills/<pack>/<name>/SKILL.md`
+（codex 的 gstack 既是技能又是技能包，只看顶层会漏掉几十个）。
+
 ## 能力位
 
 每个 provider 声明自己支持什么，UI 据此显示/禁用按钮，**服务端也会拒绝**

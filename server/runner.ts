@@ -39,6 +39,8 @@ class ChatSession {
   readonly cwd: string
   /** 全新会话：磁盘上还没有 jsonl，第一轮必须用 --session-id 而不是 --resume */
   private draft: boolean
+  /** 当前子进程启动时用的模型。--model 是启动参数，切换必须重启进程 */
+  private model: string | null = null
   private child: ChildProcessWithoutNullStreams | null = null
   private listeners = new Set<Listener>()
   private pending = new Map<string, Pending>()
@@ -133,6 +135,7 @@ class ChatSession {
       '--output-format', 'stream-json',
       '--include-partial-messages',
       '--verbose',
+      ...(this.model ? ['--model', this.model] : []),
       '--mcp-config', mcpConfig,
       // 隐藏 flag，把权限判定交给我们自己的 MCP 工具
       '--permission-prompt-tool', 'mcp__ccsperm__approve',
@@ -319,7 +322,30 @@ class ChatSession {
     }
   }
 
-  send(text: string): void {
+  get currentModel(): string | null {
+    return this.model
+  }
+
+  /**
+   * 切换模型。--model 只能在启动时给，所以要收掉现有子进程让下一轮重开。
+   * 正在生成时不切，避免打断当前回答。
+   */
+  setModel(model: string | null): boolean {
+    const next = model && model.trim() ? model.trim() : null
+    if (next === this.model) return true
+    if (this.busy) return false
+    this.model = next
+    if (this.child) {
+      try { this.child.stdin.end() } catch { /* 已关闭 */ }
+      this.child.kill('SIGINT')
+      this.child = null
+    }
+    return true
+  }
+
+  send(text: string, model?: string | null): void {
+    // 发送时带模型：与当前不同则先重启进程，否则 --model 不会生效
+    if (model !== undefined) this.setModel(model)
     if (this.busy) {
       this.queue.push(text)
       return

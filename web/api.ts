@@ -3,6 +3,7 @@ import type {
 } from '../shared/types.js'
 import type { ProviderConfig, ProviderRuntimeInfo } from '../shared/provider.js'
 import type { ProbeResult } from '../server/providers/probe.js'
+import type { CliConfig } from '../server/cli-config.js'
 
 export type TrashEntry = {
   sessionId: string
@@ -72,6 +73,9 @@ function pq(params: Record<string, string | undefined>): string {
 }
 
 export const api = {
+  cliConfig: () => get<{ clis: CliConfig[] }>('/api/cli-config'),
+  setPlugin: (provider: string, name: string, enabled: boolean) =>
+    post<{ ok: true }>('/api/cli-config/plugin', { provider, name, enabled }),
   providers: () => get<{ providers: ProviderRuntimeInfo[]; configPath: string }>('/api/providers'),
   saveProvider: (cfg: ProviderConfig) => put<{ ok: true }>(`/api/providers/${cfg.id}`, cfg),
   deleteProvider: (id: string) => del<{ ok: true }>(`/api/providers/${id}`),
@@ -86,7 +90,13 @@ export const api = {
     get<{ hits: SearchHit[] }>('/api/search' + pq({ q, cwd, provider })),
   stats: (provider?: string) => get<StatsResponse>('/api/stats' + pq({ provider })),
   rescan: () => post<{ scanned: number; reindexed: number; removed: number; ms: number }>('/api/rescan'),
-  send: (id: string, text: string) => post<{ ok: true }>(`/api/chat/${id}/send`, { text }),
+  send: (id: string, text: string, model?: string | null) =>
+    post<{ ok: true }>(`/api/chat/${id}/send`, { text, model }),
+  models: () => get<{
+    aliases: string[]
+    seen: { model: string; sessions: number }[]
+    fallback: string | null
+  }>('/api/models'),
   interrupt: (id: string) => post<{ ok: true }>(`/api/chat/${id}/interrupt`),
   approve: (id: string, approvalId: string, decision: ApprovalDecision) =>
     post<{ ok: boolean }>(`/api/chat/${id}/approve`, { approvalId, decision }),
