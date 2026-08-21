@@ -8,6 +8,7 @@ import { StatsView } from './components/StatsView.js'
 import { NewSessionDialog } from './components/NewSessionDialog.js'
 import { ProviderSettingsInner } from './components/ProviderSettings.js'
 import { CliConfigView, type Section } from './components/CliConfigView.js'
+import { CliHelpView } from './components/CliHelpView.js'
 import type { ProviderRuntimeInfo } from '../shared/provider.js'
 import { Icon, type IconName } from './components/Icons.js'
 
@@ -37,7 +38,7 @@ export function App() {
   const [trashItems, setTrashItems] = useState<TrashEntry[]>([])
   const [providers, setProviders] = useState<ProviderRuntimeInfo[]>([])
   /** 设置中心的分区。来源与能力清单同级，避免两层页签叠在一起 */
-  const [settingsTab, setSettingsTab] = useState<'sources' | Section>('sources')
+  const [settingsTab, setSettingsTab] = useState<'sources' | 'help' | Section>('sources')
   /** null = 全部 CLI */
   const [provider, setProvider] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -271,6 +272,7 @@ export function App() {
                     ['mcp', 'MCP'],
                     ['skills', '技能'],
                     ['plugins', '插件'],
+                    ['help', '指令'],
                   ] as const).map(([k, label]) => (
                     <button
                       key={k}
@@ -281,7 +283,9 @@ export function App() {
                 </div>
                 {settingsTab === 'sources'
                   ? <ProviderSettingsInner onChanged={() => { loadProviders(); loadProjects(); loadSessions() }} />
-                  : <CliConfigView section={settingsTab} />}
+                  : settingsTab === 'help'
+                    ? <CliHelpView />
+                    : <CliConfigView section={settingsTab} />}
               </div>
             </div>
           : tab === 'trash'

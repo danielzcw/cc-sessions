@@ -4,6 +4,7 @@ import type {
 import type { ProviderConfig, ProviderRuntimeInfo } from '../shared/provider.js'
 import type { ProbeResult } from '../server/providers/probe.js'
 import type { CliConfig } from '../server/cli-config.js'
+import type { CliHelp } from '../server/cli-help.js'
 
 export type TrashEntry = {
   sessionId: string
@@ -73,6 +74,12 @@ function pq(params: Record<string, string | undefined>): string {
 }
 
 export const api = {
+  cliHelp: (provider: string) => get<{
+    help: CliHelp | null
+    state: { building: boolean; provider: string | null; done: number; total: number }
+  }>(`/api/cli-help/${encodeURIComponent(provider)}`),
+  refreshCliHelp: (provider: string) =>
+    post<{ ok: true }>(`/api/cli-help/${encodeURIComponent(provider)}/refresh`),
   cliConfig: () => get<{ clis: CliConfig[] }>('/api/cli-config'),
   setPlugin: (provider: string, name: string, enabled: boolean) =>
     post<{ ok: true }>('/api/cli-config/plugin', { provider, name, enabled }),

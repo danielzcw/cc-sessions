@@ -351,6 +351,36 @@ DOM 里内容齐全，页面却整片空白，非常难查。
 技能枚举支持两级目录：`skills/<name>/SKILL.md` 与 `skills/<pack>/<name>/SKILL.md`
 （codex 的 gstack 既是技能又是技能包，只看顶层会漏掉几十个）。
 
+## 指令说明
+
+「设置 → 指令」按 CLI 浏览完整命令树：命令、usage、选项逐条说明、可展开原始
+`--help` 输出，支持跨命令筛选。
+
+内容**从 CLI 自己身上递归抓取**，不是手写文档 —— 手写的必然过时
+（本项目开发期间 claude 就从 2.1.223 升到了 2.1.238）。升级 CLI 后点「重新抓取」即可同步。
+结果落盘缓存在 `~/.cc-sessions/cli-help/`，因为一次完整构建要跑几十次 `--help`
+（claude 45 条 / codex 54 条 / omp 35 条），后台执行并轮询进度。
+
+安全上只执行 `--help`，子命令名必须通过白名单校验才拼进参数，
+全程 execFile + 数组参数不经 shell。**绝不把用户输入传给 CLI** ——
+开发中犯过一次 `claude models`，被当成 prompt 真跑了一轮。
+
+### 解析这三种 help 格式踩的坑
+
+claude 是 commander 风格（`Commands:`）、codex 是 clap、omp 是大写段标题（`COMMANDS`），
+四个坑都是实测撞出来的：
+
+- **段标题必须顶格**。`claude mcp --help` 里 add 的描述含一个缩进两格的 `Examples:`，
+  当成段标题就会让后面的 remove/list/get 全部漏掉
+- **命令名的缩进必须限定在 2-4 空格**。换行的描述对齐到第 40 列，
+  用 `\s{2,}` 会把描述里的词当成命令 —— 凭空多出 `configuration`、`findings`
+- **名字后面不能要求紧跟两个空格**。`add [options] <name> <commandOrUrl>` 这种
+  带占位符的行会整条匹配不上
+- **要认 `plugin|plugins` 别名写法**，否则这条命令直接丢失
+
+外加一层兜底：子命令的 help 输出与父级完全一致时丢弃该节点并停止递归 ——
+子命令不存在时很多 CLI 会原样吐回上一级的 help，光靠解析器难以杜绝误判。
+
 ## 能力位
 
 每个 provider 声明自己支持什么，UI 据此显示/禁用按钮，**服务端也会拒绝**

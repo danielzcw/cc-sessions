@@ -32,6 +32,7 @@ import type {
 import type { ProviderConfig, ProviderRuntimeInfo } from '../shared/provider.js'
 import { probeProvider } from './providers/probe.js'
 import { readCliConfigs, setClaudePlugin } from './cli-config.js'
+import { buildHelp, buildState, readCachedHelp } from './cli-help.js'
 import {
   addMcp, addSkill, listSkillTrash, removeMcp, removeSkill, restoreSkill,
 } from './cli-mutate.js'
@@ -228,6 +229,24 @@ app.get('/api/health', (c) => c.json({ checks: runChecks() }))
 // ---------------- 设置中心：各 CLI 的 MCP / 技能 / 插件 ----------------
 
 app.get('/api/cli-config', (c) => c.json({ clis: readCliConfigs() }))
+
+/**
+ * 指令说明。内容从 CLI 自己的 --help 递归抓取并落盘缓存 ——
+ * 一次完整构建要跑几十次 --help，不能在请求里同步做。
+ */
+app.get('/api/cli-help/:provider', (c) => {
+  const provider = c.req.param('provider')
+  const cached = readCachedHelp(provider)
+  return c.json({ help: cached, state: buildState() })
+})
+
+app.post('/api/cli-help/:provider/refresh', (c) => {
+  const provider = c.req.param('provider')
+  if (buildState().building) return c.json({ error: '已有构建在进行中' }, 409)
+  // 后台构建，立刻返回；前端轮询 GET 看进度
+  void buildHelp(provider).catch((e) => console.warn('[ccs] 抓取指令失败:', (e as Error).message))
+  return c.json({ ok: true, started: true })
+})
 
 /** MCP 增删：claude / codex 走各自的官方命令，omp 改它的 mcp.json */
 app.post('/api/cli-config/mcp', async (c) => {
