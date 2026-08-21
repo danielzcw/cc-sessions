@@ -126,12 +126,13 @@ app.get('/api/sessions/:id', async (c) => {
     // 新建但还没发过消息的会话：磁盘与索引都没有，返回一个空壳让前端能进聊天界面
     const cwd = runners.cwdOf(id)
     if (cwd) {
+      const draftCfg = getProvider('claude-code')
       const empty: SessionDetail = {
         summary: {
-          provider: 'claude-code',
-          providerName: 'Claude Code',
-          capabilities: { resume: true, rename: true, delete: true },
-          resumeCommand: `claude --resume ${id}`,
+          provider: draftCfg?.id ?? 'claude-code',
+          providerName: draftCfg?.name ?? 'Claude Code',
+          capabilities: draftCfg?.capabilities ?? { resume: true, rename: true, delete: true },
+          resumeCommand: (draftCfg?.resumeCommand ?? '').replace('{id}', id),
           sessionId: id, projectDir: '', cwd, title: '新会话', titleSource: 'prompt',
           firstPrompt: '', createdAt: null, updatedAt: null, messageCount: 0,
           gitBranch: null, model: null, costUsd: 0, totalTokens: 0,
@@ -227,9 +228,21 @@ app.post('/api/rescan', async (c) => c.json(await scanAll(c.req.query('full') ==
  * cwd 对应的项目目录），所以这里先生成 id 交给前端，第一条消息发出时才真正 spawn。
  */
 app.post('/api/sessions/new', async (c) => {
-  const body = await c.req.json<{ cwd?: string }>().catch(() => ({} as { cwd?: string }))
+  const body = await c.req.json<{ cwd?: string; provider?: string }>()
+    .catch(() => ({} as { cwd?: string; provider?: string }))
   const cwd = (body.cwd ?? '').trim()
+  const providerId = (body.provider ?? 'claude-code').trim()
   if (!cwd) return c.json({ error: '必须指定工作目录' }, 400)
+
+  const cfg = getProvider(providerId)
+  if (!cfg) return c.json({ error: `未知来源 ${providerId}` }, 400)
+  if (!cfg.capabilities.resume) {
+    // Web 内新建需要接管该 CLI 的对话协议，没实现的一律拒绝并给出终端命令
+    return c.json({
+      error: `${cfg.name} 只能在终端里新建会话`,
+      terminalCommand: (cfg.newSessionCommand ?? '').replace('{cwd}', cwd),
+    }, 400)
+  }
   if (!path.isAbsolute(cwd)) return c.json({ error: '工作目录必须是绝对路径' }, 400)
   try {
     const st = await fsp.stat(cwd)
@@ -240,7 +253,7 @@ app.post('/api/sessions/new', async (c) => {
   const sessionId = randomUUID()
   // 注册为 draft：磁盘还没有 jsonl，DB 也查不到，后续 /stream 与 /send 靠 registry 兜底
   runners.getOrCreate(sessionId, cwd, true)
-  return c.json({ sessionId, cwd })
+  return c.json({ sessionId, cwd, provider: cfg.id })
 })
 
 /** 候选工作目录：已有项目 + 它们的父目录下的兄弟目录，供新建会话时选择 */

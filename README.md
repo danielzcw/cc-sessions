@@ -225,6 +225,11 @@ trigram 需要 ≥3 个字符，**2 字中文查询（如"历史"）匹配不到
 
 ## 新建会话
 
+「新建会话」可选 CLI 与工作目录，但**只有 `capabilities.resume` 的 provider 能在 Web 内开** ——
+那需要接管该 CLI 的对话协议与权限审批。其余 provider 给出在该目录启动它的终端命令
+（`newSessionCommand`，如 `cd {cwd} && codex`），跑完刷新即可在列表里看到。
+服务端同样校验，不支持的来源返回 400 并附带该命令。
+
 `--session-id <uuid>` 是可用的（实测 CLI 会采纳该 id，并把文件落到 cwd 派生的项目目录）。
 所以流程是：前端选 cwd → `POST /api/sessions/new` 生成 uuid 并登记为 **draft** →
 用户发第一条消息时才真正 spawn，首轮用 `--session-id`，之后自动切回 `--resume`。

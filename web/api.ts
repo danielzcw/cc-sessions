@@ -91,7 +91,8 @@ export const api = {
   approve: (id: string, approvalId: string, decision: ApprovalDecision) =>
     post<{ ok: boolean }>(`/api/chat/${id}/approve`, { approvalId, decision }),
   exportUrl: (id: string) => `/api/sessions/${id}/export`,
-  newSession: (cwd: string) => post<{ sessionId: string; cwd: string }>('/api/sessions/new', { cwd }),
+  newSession: (cwd: string, provider?: string) =>
+    post<{ sessionId: string; cwd: string; provider: string }>('/api/sessions/new', { cwd, provider }),
   cwdSuggestions: () => get<{ suggestions: { cwd: string; known: boolean }[] }>('/api/cwd-suggestions'),
   rename: (id: string, title: string) =>
     patch<{ ok: true; title: string; titleSource: string }>(`/api/sessions/${id}/title`, { title }),

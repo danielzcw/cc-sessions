@@ -94,6 +94,12 @@ export type ProviderConfig = {
 
   /** 在终端里继续该会话的命令模板，`{id}` / `{cwd}` 会被替换 */
   resumeCommand?: string
+  /**
+   * 在指定目录开一个新会话的命令模板，`{cwd}` 会被替换。
+   * 仅用于 capabilities.resume=false 的 provider —— 这些 CLI 的对话协议没有接管，
+   * 只能把命令交给用户在终端里跑。
+   */
+  newSessionCommand?: string
 }
 
 export type ProviderRuntimeInfo = ProviderConfig & {

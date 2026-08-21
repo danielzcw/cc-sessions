@@ -346,6 +346,7 @@ export function App() {
 
       {creating && (
         <NewSessionDialog
+          providers={providers}
           onClose={() => setCreating(false)}
           onCreated={(id) => {
             setCreating(false)

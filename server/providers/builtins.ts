@@ -91,6 +91,7 @@ export const CODEX: ProviderConfig = {
   ],
   capabilities: { resume: false, rename: false, delete: true },
   resumeCommand: 'codex resume {id}',
+  newSessionCommand: 'cd {cwd} && codex',
 }
 
 /**
@@ -140,6 +141,7 @@ export const OMP: ProviderConfig = {
   ],
   capabilities: { resume: false, rename: false, delete: true },
   resumeCommand: 'omp --resume {id}',
+  newSessionCommand: 'cd {cwd} && omp',
 }
 
 export const BUILTIN_PROVIDERS: ProviderConfig[] = [CLAUDE_CODE, CODEX, OMP]
