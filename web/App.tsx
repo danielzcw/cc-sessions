@@ -8,14 +8,23 @@ import { StatsView } from './components/StatsView.js'
 import { NewSessionDialog } from './components/NewSessionDialog.js'
 import { ProviderSettings } from './components/ProviderSettings.js'
 import type { ProviderRuntimeInfo } from '../shared/provider.js'
+import { Icon, type IconName } from './components/Icons.js'
 
 type Tab = 'sessions' | 'search' | 'stats' | 'trash' | 'providers'
+
+/** 侧栏导航项：单色图标 + 标签，竖排排列 */
+const NAV: [Tab, IconName, string][] = [
+  ['sessions', 'chat', '会话'],
+  ['search', 'search', '搜索'],
+  ['stats', 'chart', '统计'],
+  ['trash', 'trash', '回收站'],
+  ['providers', 'gear', '来源'],
+]
 
 type Toast = { kind: 'undo'; entry: TrashEntry } | { kind: 'error'; text: string } | null
 
 export function App() {
   const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const [claudeHome, setClaudeHome] = useState('')
   const [cwd, setCwd] = useState<string | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [current, setCurrent] = useState<string | null>(null)
@@ -32,7 +41,7 @@ export function App() {
 
   const loadProjects = useCallback(() => {
     api.projects(provider ?? undefined)
-      .then((r) => { setProjects(r.projects); setClaudeHome(r.claudeHome) })
+      .then((r) => setProjects(r.projects))
       .catch((e) => setErr((e as Error).message))
   }, [provider])
 
@@ -66,6 +75,8 @@ export function App() {
     api.trash().then((r) => setTrashItems(r.items)).catch(() => setTrashItems([]))
   }, [])
 
+  // 启动时也拉一次：导航上的回收站角标要立刻显示，不能等切到那个页签
+  useEffect(loadTrash, [loadTrash])
   useEffect(() => { if (tab === 'trash') loadTrash() }, [tab, loadTrash])
 
   /**
@@ -137,50 +148,65 @@ export function App() {
 
   const totalCost = projects.reduce((a, p) => a + p.costUsd, 0)
   const totalSessions = projects.reduce((a, p) => a + p.sessionCount, 0)
+  const enabled = providers.filter((p) => p.enabled)
+  const trashCount = trashItems.length
 
   return (
     <div className={`app${['stats', 'trash', 'providers'].includes(tab) ? ' wide-detail' : ''}`}>
       <aside className="pane pane-sidebar">
         <div className="brand">
           <span className="brand-dot" />
-          <div>
-            Claude Code 会话管理器
-            <small>{claudeHome}</small>
+          <div className="brand-text">
+            <b>会话管理器</b>
+            <small>
+              {totalSessions} 会话 / {enabled.length} 来源
+            </small>
           </div>
         </div>
 
-        <button className="btn new-session" onClick={() => setCreating(true)}>＋ 新建会话</button>
-
-        {providers.filter((p) => p.enabled).length > 1 && (
-          <div className="prov-switch">
+        {/* 竖排导航：5 个中文页签横排在 232px 里必然折行 */}
+        <nav className="side-nav">
+          {NAV.map(([key, icon, label]) => (
             <button
-              className={provider === null ? 'on' : ''}
-              onClick={() => { setProvider(null); setCurrent(null) }}
-            >全部</button>
-            {providers.filter((p) => p.enabled).map((p) => (
+              key={key}
+              className={tab === key ? 'on' : ''}
+              onClick={() => setTab(key)}
+            >
+              <span className="ico"><Icon name={icon} /></span>
+              <span className="lbl">{label}</span>
+              {key === 'trash' && trashCount > 0 && <span className="n">{trashCount}</span>}
+              {key === 'providers' && <span className="n">{enabled.length}</span>}
+            </button>
+          ))}
+        </nav>
+
+        <div className="side-scroll">
+          {enabled.length > 1 && (
+            <>
+              <div className="section-label">来源</div>
               <button
-                key={p.id}
-                className={provider === p.id ? 'on' : ''}
-                style={provider === p.id && p.color ? { borderColor: p.color, color: p.color } : undefined}
-                onClick={() => { setProvider(p.id); setCurrent(null) }}
-                title={`${p.root}（${p.sessionCount} 个会话）`}
+                className={`src-row${provider === null ? ' on' : ''}`}
+                onClick={() => { setProvider(null); setCurrent(null) }}
               >
-                {p.name}
-                <span className="n">{p.sessionCount}</span>
+                <span className="src-dot all" />
+                <span className="src-name">全部</span>
+                <span className="src-n">{totalSessions}</span>
               </button>
-            ))}
-          </div>
-        )}
+              {enabled.map((p) => (
+                <button
+                  key={p.id}
+                  className={`src-row${provider === p.id ? ' on' : ''}`}
+                  onClick={() => { setProvider(p.id); setCurrent(null) }}
+                  title={`${p.root}（${p.sessionCount} 个会话）`}
+                >
+                  <span className="src-dot" style={{ background: p.color ?? 'var(--accent)' }} />
+                  <span className="src-name">{p.name}</span>
+                  <span className="src-n">{p.sessionCount}</span>
+                </button>
+              ))}
+            </>
+          )}
 
-        <div className="nav-tabs">
-          <button className={tab === 'sessions' ? 'on' : ''} onClick={() => setTab('sessions')}>会话</button>
-          <button className={tab === 'search' ? 'on' : ''} onClick={() => setTab('search')}>搜索</button>
-          <button className={tab === 'stats' ? 'on' : ''} onClick={() => setTab('stats')}>统计</button>
-          <button className={tab === 'trash' ? 'on' : ''} onClick={() => setTab('trash')}>回收站</button>
-          <button className={tab === 'providers' ? 'on' : ''} onClick={() => setTab('providers')}>来源</button>
-        </div>
-
-        <div className="pane-body">
           <div className="section-label">项目 · {projects.length}</div>
           <button className={`proj${cwd === null ? ' on' : ''}`} onClick={() => setCwd(null)}>
             <div className="proj-name">全部项目</div>
@@ -198,7 +224,7 @@ export function App() {
                 {p.projectDirs.length > 1 && ' ⧉'}
               </div>
               <div className="proj-meta">
-                <span>{p.sessionCount}</span>
+                <span>{p.sessionCount} 会话</span>
                 <span>{fmtTime(p.lastActiveAt)}</span>
                 <span>{fmtCost(p.costUsd)}</span>
               </div>
@@ -206,9 +232,11 @@ export function App() {
           ))}
         </div>
 
-        <div style={{ flex: 'none', padding: 10, borderTop: '1px solid var(--border)' }}>
-          <button className="btn ghost" style={{ width: '100%' }} onClick={() => void rescan()} disabled={rescanning}>
-            {rescanning ? <span className="spin" /> : '重新扫描索引'}
+        <div className="side-foot">
+          {/* 新建会话只对 Claude Code 有效，不该是侧栏里视觉最重的元素 */}
+          <button className="side-act" onClick={() => setCreating(true)}>＋ 新建会话</button>
+          <button className="side-act" onClick={() => void rescan()} disabled={rescanning}>
+            {rescanning ? <span className="spin" /> : '↻ 重新扫描'}
           </button>
         </div>
       </aside>

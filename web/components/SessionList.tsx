@@ -71,10 +71,8 @@ export function SessionList({
               ) : (
                 <>
                   <span>{s.title}</span>
-                  {showProvider && <span className="badge prov">{s.providerName}</span>}
-              {s.live && <span className="badge live">运行中</span>}
-                  {s.hasBranches && <span className="badge branch">分支</span>}
-                  {s.titleSource === 'custom' && <span className="badge">自定义</span>}
+                  {/* 只留状态徽标：来源/分支/自定义都挤在标题行会把标题挤到很早就截断 */}
+                  {s.live && <span className="badge live">运行中</span>}
                   <button
                     className="sess-rename"
                     title={
@@ -108,12 +106,16 @@ export function SessionList({
               <div className="sess-prompt">{s.firstPrompt}</div>
             )}
 
+            {/* 单行不换行：字段一多就会把行高从 70px 撑到 140px，列表变得没法扫读。
+                git 分支最长且价值最低，只在没有其他次要标记时才显示。 */}
             <div className="sess-meta">
+              {showProvider && <span className="src">{s.providerName}</span>}
               <span>{fmtTime(s.updatedAt)}</span>
               <span>{s.messageCount} 条</span>
-              <span>{fmtCost(s.costUsd)}</span>
+              {s.costUsd > 0 && <span>{fmtCost(s.costUsd)}</span>}
               <span>{fmtBytes(s.sizeBytes)}</span>
-              {s.gitBranch && <span>⎇ {s.gitBranch}</span>}
+              {s.hasBranches && <span title="含 /rewind 分支">⑂</span>}
+              {s.titleSource === 'custom' && <span title="已自定义标题">✎</span>}
             </div>
           </div>
         ))}

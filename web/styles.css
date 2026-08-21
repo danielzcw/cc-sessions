@@ -124,21 +124,21 @@ input, textarea {
 /* ---------- 侧栏 ---------- */
 
 .brand {
-  padding: 14px 14px 10px;
-  font-size: 13px;
-  font-weight: 600;
+  flex: none;
+  padding: 14px 14px 12px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
 }
 .brand-dot {
   width: 9px; height: 9px; border-radius: 50%;
   background: var(--accent);
   flex: none;
 }
-.brand small {
+.brand-text { min-width: 0; line-height: 1.35; }
+.brand-text b { font-size: 13.5px; font-weight: 600; display: block; }
+.brand-text small {
   display: block;
-  font-weight: 400;
   color: var(--text-faint);
   font-size: 11px;
   font-family: var(--mono);
@@ -952,3 +952,164 @@ h3.sec { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; col
   white-space: nowrap;
 }
 .resume-cmd:hover { border-color: var(--accent); }
+
+/* ---------- 侧栏重做 ---------- */
+
+/* 竖排导航：5 个中文页签横排在 232px 宽度里必然折行 */
+.side-nav {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 8px 8px;
+}
+.side-nav button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--text-dim);
+  text-align: left;
+}
+.side-nav button:hover { background: var(--bg-hover); }
+.side-nav button.on {
+  background: var(--bg-active);
+  color: var(--text);
+  font-weight: 500;
+}
+.side-nav .ico {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  font-size: 12.5px;
+  opacity: 0.85;
+}
+.side-nav .lbl { flex: 1; }
+.side-nav .n {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0 5px;
+  line-height: 1.5;
+}
+.side-nav button.on .n { border-color: var(--border-strong); }
+
+.side-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+/* 来源行：和项目列表同构，不再用会换行的芯片 */
+.src-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 14px;
+  text-align: left;
+  border-left: 2px solid transparent;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.src-row:hover { background: var(--bg-hover); }
+.src-row.on {
+  background: var(--bg-active);
+  color: var(--text);
+  border-left-color: var(--accent);
+  font-weight: 500;
+}
+.src-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.src-dot.all {
+  background: none;
+  border: 1.5px solid var(--border-strong);
+}
+.src-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-n { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
+
+/* 底部动作：新建会话只对 Claude Code 有效，不该抢视觉焦点 */
+.side-foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+.side-act {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  text-align: center;
+}
+.side-act:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.side-act:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 侧栏原本用 .pane-body 承载滚动，改用 .side-scroll 后这条不再需要 */
+.pane-sidebar .pane-body { border-top: none; }
+
+/* 图标跟随文字颜色，选中态自动一致 */
+.side-nav .ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+}
+.side-nav button.on .ico { opacity: 1; color: var(--accent); }
+
+/* 项目元信息用中点分隔：相邻数字（会话数与相对时间）否则会糊成一团 */
+.proj-meta span + span::before {
+  content: '·';
+  margin-right: 5px;
+  color: var(--border-strong);
+}
+.sess-meta span + span::before {
+  content: '·';
+  margin-right: 6px;
+  color: var(--border-strong);
+}
+
+/* ---------- 列表观感收敛 ---------- */
+
+/* 选中态原来是大面积 accent-soft，饱和度过高；改成左侧强调条 + 浅底 */
+.sess.on {
+  background: var(--bg-active);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* 标题让位给内容：只留状态类徽标，来源移到元信息行 */
+.sess-title { gap: 6px; }
+.sess-meta .src {
+  color: var(--accent);
+  opacity: 0.85;
+}
+/* 元信息强制单行：换行会把行高从 ~70px 撑到 140px，列表就没法扫读了 */
+.sess-meta {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* 排序切换的选中态原来是实心灰块，压过了内容 */
+.pane-list .nav-tabs button.on {
+  background: transparent;
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+  border-radius: 0;
+}
