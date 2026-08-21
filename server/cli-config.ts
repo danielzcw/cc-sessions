@@ -14,6 +14,12 @@ export type McpEntry = {
   name: string
   command: string
   source: string
+  /** 作用域：user 全局生效，local/project 只对某个目录生效 */
+  scope: string
+  /** local/project 作用域对应的目录 */
+  scopePath?: string
+  /** 能否通过本 App 增删（claude/codex 走官方命令，omp 改 JSON） */
+  writable: boolean
   /** 环境变量键名（只列键不列值，避免把密钥吐到界面上） */
   envKeys: string[]
 }
@@ -22,6 +28,13 @@ export type SkillEntry = {
   name: string
   description: string
   path: string
+}
+
+/** 该 provider 是否有可管理的技能目录 */
+export type CliCapabilities = {
+  mcpWritable: boolean
+  skillsWritable: boolean
+  pluginsWritable: boolean
 }
 
 export type PluginEntry = {
@@ -34,6 +47,7 @@ export type PluginEntry = {
 
 export type CliConfig = {
   provider: string
+  capabilities: CliCapabilities
   /** 配置文件路径，界面上直接展示便于用户手改 */
   configPaths: { label: string; path: string; exists: boolean }[]
   mcp: McpEntry[]
@@ -135,7 +149,10 @@ function scanToml(file: string): { mcp: McpEntry[]; plugins: PluginEntry[] } {
       section = sec
       const mcpName = /^mcp_servers\.(.+)$/.exec(sec)
       if (mcpName) {
-        cur = { name: mcpName[1].replace(/^"|"$/g, ''), command: '', source: tilde(file), envKeys: [] }
+        cur = {
+          name: mcpName[1].replace(/^"|"$/g, ''),
+          command: '', source: tilde(file), scope: 'user', writable: true, envKeys: [],
+        }
         continue
       }
       const plugName = /^plugins\.(.+)$/.exec(sec)
@@ -171,18 +188,29 @@ function claudeConfig(): CliConfig {
 
   const mcp: McpEntry[] = []
   const state = readJson(stateFile)
-  if (state && typeof state === 'object' && 'mcpServers' in state) {
-    const servers = Reflect.get(state, 'mcpServers')
-    if (servers && typeof servers === 'object') {
-      for (const [name, v] of Object.entries(servers)) {
-        const cmd = v && typeof v === 'object' && 'command' in v ? String(Reflect.get(v, 'command')) : ''
-        const env = v && typeof v === 'object' && 'env' in v ? Reflect.get(v, 'env') : null
-        mcp.push({
-          name,
-          command: cmd,
-          source: tilde(stateFile),
-          envKeys: env && typeof env === 'object' ? Object.keys(env) : [],
-        })
+
+  const collect = (servers: unknown, scope: string, scopePath?: string): void => {
+    if (!servers || typeof servers !== 'object') return
+    for (const [name, v] of Object.entries(servers)) {
+      const cmd = v && typeof v === 'object' && 'command' in v ? String(Reflect.get(v, 'command'))
+        : v && typeof v === 'object' && 'url' in v ? String(Reflect.get(v, 'url')) : ''
+      const env = v && typeof v === 'object' && 'env' in v ? Reflect.get(v, 'env') : null
+      mcp.push({
+        name, command: cmd, source: tilde(stateFile), scope, scopePath,
+        writable: true,
+        envKeys: env && typeof env === 'object' ? Object.keys(env) : [],
+      })
+    }
+  }
+
+  if (state && typeof state === 'object') {
+    collect(Reflect.get(state, 'mcpServers'), 'user')
+    // 项目作用域的 MCP 也要列出来，否则清单会漏掉只在某个目录生效的服务器
+    const projects = Reflect.get(state, 'projects')
+    if (projects && typeof projects === 'object') {
+      for (const [dir, pv] of Object.entries(projects)) {
+        if (!pv || typeof pv !== 'object') continue
+        collect(Reflect.get(pv, 'mcpServers'), 'local', dir)
       }
     }
   }
@@ -201,6 +229,7 @@ function claudeConfig(): CliConfig {
 
   return {
     provider: 'claude-code',
+    capabilities: { mcpWritable: true, skillsWritable: true, pluginsWritable: true },
     configPaths: [
       { label: 'MCP 与项目状态', path: tilde(stateFile), exists: fs.existsSync(stateFile) },
       { label: '设置与插件开关', path: tilde(settingsFile), exists: fs.existsSync(settingsFile) },
@@ -210,8 +239,9 @@ function claudeConfig(): CliConfig {
     skills: readSkillDir(skillsDir),
     plugins: plugins.sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name)),
     notes: [
+      'MCP 增删走 claude mcp add/remove 官方命令，不手改 ~/.claude.json。',
+      'claude mcp add 默认写 local 作用域（只对当前目录生效），本 App 默认用 user 全局作用域。',
       '插件开关直接写 settings.json 的 enabledPlugins，改完需重启 CLI 会话生效。',
-      'MCP 配在 ~/.claude.json，那是 CLI 的活动状态文件，本 App 只读；增删请用 claude mcp 命令。',
       '插件自带的技能不在技能目录里，这里只列独立安装的。',
     ],
   }
@@ -224,6 +254,7 @@ function codexConfig(): CliConfig {
   const { mcp, plugins } = scanToml(cfg)
   return {
     provider: 'codex',
+    capabilities: { mcpWritable: true, skillsWritable: true, pluginsWritable: false },
     configPaths: [
       { label: '主配置（TOML）', path: tilde(cfg), exists: fs.existsSync(cfg) },
       { label: '技能目录', path: tilde(skillsDir), exists: fs.existsSync(skillsDir) },
@@ -231,7 +262,10 @@ function codexConfig(): CliConfig {
     mcp,
     skills: readSkillDir(skillsDir),
     plugins: plugins.sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.name.localeCompare(b.name)),
-    notes: ['配置是 TOML，安全写回需要真正的 TOML 解析器，本 App 只读。'],
+    notes: [
+      'MCP 增删走 codex mcp add/remove 官方命令，不手改 TOML。',
+      '插件开关在 config.toml 里，安全写回需要 TOML 解析器，暂时只读。',
+    ],
   }
 }
 
@@ -252,6 +286,8 @@ function ompConfig(): CliConfig {
           name,
           command: cmd,
           source: tilde(mcpFile),
+          scope: 'user',
+          writable: true,
           envKeys: env && typeof env === 'object' ? Object.keys(env) : [],
         })
       }
@@ -260,6 +296,8 @@ function ompConfig(): CliConfig {
 
   return {
     provider: 'omp',
+    // omp 没有 mcp 子命令，但 mcp.json 是纯 JSON，直接改是安全的
+    capabilities: { mcpWritable: true, skillsWritable: false, pluginsWritable: false },
     configPaths: [
       { label: 'MCP 配置', path: tilde(mcpFile), exists: fs.existsSync(mcpFile) },
       { label: '主配置（YAML）', path: tilde(ymlFile), exists: fs.existsSync(ymlFile) },
@@ -267,7 +305,10 @@ function ompConfig(): CliConfig {
     mcp,
     skills: [],
     plugins: [],
-    notes: ['omp 没有独立的技能目录，技能随 CLI 内置或由插件提供，本 App 无法枚举。'],
+    notes: [
+      'omp 没有 mcp 子命令，增删直接改 mcp.json（改前自动备份）。',
+      'omp 没有独立的技能目录，技能随 CLI 内置或由插件提供，本 App 无法枚举。',
+    ],
   }
 }
 

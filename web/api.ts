@@ -76,6 +76,23 @@ export const api = {
   cliConfig: () => get<{ clis: CliConfig[] }>('/api/cli-config'),
   setPlugin: (provider: string, name: string, enabled: boolean) =>
     post<{ ok: true }>('/api/cli-config/plugin', { provider, name, enabled }),
+  addMcp: (input: {
+    provider: string; name: string; transport: 'stdio' | 'http'
+    target: string; args: string[]; env: Record<string, string>
+    scope?: 'user' | 'local' | 'project'
+  }) => post<{ ok: true }>('/api/cli-config/mcp', input),
+  removeMcp: (provider: string, name: string, scope?: string) =>
+    del<{ ok: true }>(
+      `/api/cli-config/mcp/${encodeURIComponent(provider)}/${encodeURIComponent(name)}`
+      + (scope ? `?scope=${encodeURIComponent(scope)}` : ''),
+    ),
+  addSkill: (input: { provider: string; name: string; description: string; body: string }) =>
+    post<{ ok: true; dir: string }>('/api/cli-config/skill', input),
+  removeSkill: (provider: string, name: string) =>
+    del<{ ok: true }>(`/api/cli-config/skill/${encodeURIComponent(provider)}/${encodeURIComponent(name)}`),
+  skillTrash: () => get<{ items: { provider: string; name: string; trashPath: string; deletedAt: string }[] }>(
+    '/api/cli-config/skill-trash'),
+  restoreSkill: (trashPath: string) => post<{ ok: true }>('/api/cli-config/skill-restore', { trashPath }),
   providers: () => get<{ providers: ProviderRuntimeInfo[]; configPath: string }>('/api/providers'),
   saveProvider: (cfg: ProviderConfig) => put<{ ok: true }>(`/api/providers/${cfg.id}`, cfg),
   deleteProvider: (id: string) => del<{ ok: true }>(`/api/providers/${id}`),

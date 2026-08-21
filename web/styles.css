@@ -1173,38 +1173,94 @@ h3.sec { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; col
 .cfg-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 10px;
-  flex-wrap: wrap;
+  gap: 10px;
+  margin: 4px 0 14px;
 }
+
+/* 分段控件：原来复用 nav-tabs，数字会挤到第二行且按钮过大 */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  flex: none;
+}
+.seg button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+}
+.seg button:last-child { border-right: none; }
+.seg button:hover { background: var(--bg-hover); }
+.seg button.on { background: var(--bg-active); color: var(--text); font-weight: 500; }
+.seg i {
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.seg button.on i { color: var(--accent); }
+
+.cfg-filter {
+  flex: 1;
+  max-width: 300px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  outline: none;
+  font-size: 12.5px;
+}
+.cfg-filter:focus { border-color: var(--accent); }
 
 .cfg-cli {
   border: 1px solid var(--border);
   border-radius: 10px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   overflow: hidden;
   background: var(--bg-raised);
 }
 .cfg-cli-head {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 9px 12px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
   background: var(--bg-sunken);
   border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
 }
 .cfg-cli-head b { font-size: 13px; }
-.cfg-paths {
-  margin-left: auto;
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
+.cfg-count {
+  font-family: var(--mono);
   font-size: 11px;
   color: var(--text-faint);
 }
-.cfg-paths .missing { text-decoration: line-through; opacity: 0.6; }
-.cfg-paths code { font-size: 10.5px; }
+/* 路径原来平铺在标题行右侧，长路径直接溢出被截断；改成按需展开 */
+.cfg-path-btn {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.cfg-path-btn:hover { background: var(--bg-hover); color: var(--text); }
+
+.cfg-paths {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cfg-paths > div { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 11.5px; }
+.cfg-paths .lbl { color: var(--text-faint); min-width: 96px; }
+.cfg-paths code { font-size: 11px; overflow-wrap: anywhere; }
+.cfg-paths .missing { opacity: 0.55; }
 
 .cfg-row {
   display: flex;
@@ -1223,19 +1279,90 @@ h3.sec { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; col
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cfg-sub.desc {
-  color: var(--text-dim);
-  white-space: normal;
-  line-height: 1.5;
-  margin: 2px 0;
+.cfg-sub.desc { color: var(--text-dim); white-space: normal; line-height: 1.5; margin: 2px 0; }
+.cfg-empty { padding: 12px; font-size: 12px; color: var(--text-faint); }
+
+.cfg-del {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 9px;
 }
-.cfg-empty { padding: 10px 12px; font-size: 12px; color: var(--text-faint); }
+.cfg-del:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
+.cfg-del:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.cfg-switch {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+/* 备注原来是常显的大块列表，压过了内容 */
 .cfg-notes {
-  margin: 0;
-  padding: 8px 12px 10px 30px;
   border-top: 1px solid var(--border);
   background: var(--bg-sunken);
   font-size: 11.5px;
+}
+.cfg-notes summary {
+  padding: 6px 12px;
+  cursor: pointer;
+  color: var(--text-faint);
+  list-style: none;
+}
+.cfg-notes summary::-webkit-details-marker { display: none; }
+.cfg-notes summary::before { content: '▸ '; }
+.cfg-notes[open] summary::before { content: '▾ '; }
+.cfg-notes summary:hover { color: var(--text-dim); }
+.cfg-notes ul { margin: 0; padding: 0 12px 10px 30px; color: var(--text-dim); }
+.cfg-notes li { margin: 2px 0; line-height: 1.5; }
+
+/* 新增表单 */
+.cfg-form {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
+}
+.cfg-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+.cfg-form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
   color: var(--text-dim);
 }
-.cfg-notes li { margin: 2px 0; }
+.cfg-form-grid label.wide { grid-column: 1 / -1; }
+.cfg-form-grid input,
+.cfg-form-grid select,
+.cfg-form-grid textarea {
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--bg);
+  outline: none;
+  font-size: 12.5px;
+  font-family: var(--mono);
+  resize: vertical;
+}
+.cfg-form-grid input:focus,
+.cfg-form-grid textarea:focus { border-color: var(--accent); }
+.cfg-form-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  justify-content: flex-end;
+}
+.cfg-form-foot .mono-dim { margin-right: auto; }
+
+/* MCP 作用域徽标 */
+.cfg-name .badge { margin-left: 6px; font-weight: 400; }

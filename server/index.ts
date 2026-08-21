@@ -32,6 +32,9 @@ import type {
 import type { ProviderConfig, ProviderRuntimeInfo } from '../shared/provider.js'
 import { probeProvider } from './providers/probe.js'
 import { readCliConfigs, setClaudePlugin } from './cli-config.js'
+import {
+  addMcp, addSkill, listSkillTrash, removeMcp, removeSkill, restoreSkill,
+} from './cli-mutate.js'
 
 const PORT = Number(process.env.PORT || 5274)
 const HOST = process.env.HOST || '127.0.0.1'
@@ -225,6 +228,74 @@ app.get('/api/health', (c) => c.json({ checks: runChecks() }))
 // ---------------- 设置中心：各 CLI 的 MCP / 技能 / 插件 ----------------
 
 app.get('/api/cli-config', (c) => c.json({ clis: readCliConfigs() }))
+
+/** MCP 增删：claude / codex 走各自的官方命令，omp 改它的 mcp.json */
+app.post('/api/cli-config/mcp', async (c) => {
+  type McpBody = {
+    provider?: string; name?: string; transport?: string; target?: string
+    args?: string[]; env?: Record<string, string>; scope?: 'user' | 'local' | 'project'
+  }
+  const body = await c.req.json<McpBody>().catch((): McpBody => ({}))
+  const provider = body.provider ?? ''
+  if (!body.name) return c.json({ error: '缺少名称' }, 400)
+  try {
+    addMcp(provider, {
+      name: body.name,
+      transport: body.transport === 'http' ? 'http' : 'stdio',
+      target: body.target ?? '',
+      args: Array.isArray(body.args) ? body.args.filter((a) => typeof a === 'string') : [],
+      env: body.env && typeof body.env === 'object' ? body.env : {},
+      scope: body.scope,
+    })
+    return c.json({ ok: true })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+app.delete('/api/cli-config/mcp/:provider/:name', (c) => {
+  try {
+    removeMcp(c.req.param('provider'), c.req.param('name'), c.req.query('scope') || undefined)
+    return c.json({ ok: true })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+/** 技能增删：新增落盘 SKILL.md，移除进回收站（技能可能是手写的，删了没法恢复） */
+app.post('/api/cli-config/skill', async (c) => {
+  type SkillBody = { provider?: string; name?: string; description?: string; body?: string }
+  const body = await c.req.json<SkillBody>().catch((): SkillBody => ({}))
+  if (!body.name) return c.json({ error: '缺少名称' }, 400)
+  try {
+    const dir = addSkill(body.provider ?? '', body.name, body.description ?? '', body.body ?? '')
+    return c.json({ ok: true, dir })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+app.delete('/api/cli-config/skill/:provider/:name', (c) => {
+  try {
+    const entry = removeSkill(c.req.param('provider'), c.req.param('name'))
+    return c.json({ ok: true, entry })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
+
+app.get('/api/cli-config/skill-trash', (c) => c.json({ items: listSkillTrash() }))
+
+app.post('/api/cli-config/skill-restore', async (c) => {
+  const body = await c.req.json<{ trashPath?: string }>().catch((): { trashPath?: string } => ({}))
+  if (!body.trashPath) return c.json({ error: '缺少 trashPath' }, 400)
+  try {
+    restoreSkill(body.trashPath)
+    return c.json({ ok: true })
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400)
+  }
+})
 
 /** 只开放 Claude Code 的插件开关：它是纯 JSON 布尔表，改动可预测 */
 app.post('/api/cli-config/plugin', async (c) => {

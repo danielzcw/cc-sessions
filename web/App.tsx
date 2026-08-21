@@ -7,7 +7,7 @@ import { SearchView } from './components/SearchView.js'
 import { StatsView } from './components/StatsView.js'
 import { NewSessionDialog } from './components/NewSessionDialog.js'
 import { ProviderSettingsInner } from './components/ProviderSettings.js'
-import { CliConfigView } from './components/CliConfigView.js'
+import { CliConfigView, type Section } from './components/CliConfigView.js'
 import type { ProviderRuntimeInfo } from '../shared/provider.js'
 import { Icon, type IconName } from './components/Icons.js'
 
@@ -36,8 +36,8 @@ export function App() {
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [trashItems, setTrashItems] = useState<TrashEntry[]>([])
   const [providers, setProviders] = useState<ProviderRuntimeInfo[]>([])
-  /** 设置中心的子页签 */
-  const [settingsTab, setSettingsTab] = useState<'sources' | 'cli'>('sources')
+  /** 设置中心的分区。来源与能力清单同级，避免两层页签叠在一起 */
+  const [settingsTab, setSettingsTab] = useState<'sources' | Section>('sources')
   /** null = 全部 CLI */
   const [provider, setProvider] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -265,19 +265,23 @@ export function App() {
         {tab === 'providers'
           ? <div className="pane-body">
               <div className="stats" style={{ paddingTop: 16 }}>
-                <div className="nav-tabs" style={{ padding: 0, maxWidth: 300, marginBottom: 6 }}>
-                  <button
-                    className={settingsTab === 'sources' ? 'on' : ''}
-                    onClick={() => setSettingsTab('sources')}
-                  >CLI 来源</button>
-                  <button
-                    className={settingsTab === 'cli' ? 'on' : ''}
-                    onClick={() => setSettingsTab('cli')}
-                  >MCP / 技能 / 插件</button>
+                <div className="seg" style={{ marginBottom: 14 }}>
+                  {([
+                    ['sources', 'CLI 来源'],
+                    ['mcp', 'MCP'],
+                    ['skills', '技能'],
+                    ['plugins', '插件'],
+                  ] as const).map(([k, label]) => (
+                    <button
+                      key={k}
+                      className={settingsTab === k ? 'on' : ''}
+                      onClick={() => setSettingsTab(k)}
+                    >{label}</button>
+                  ))}
                 </div>
                 {settingsTab === 'sources'
                   ? <ProviderSettingsInner onChanged={() => { loadProviders(); loadProjects(); loadSessions() }} />
-                  : <CliConfigView />}
+                  : <CliConfigView section={settingsTab} />}
               </div>
             </div>
           : tab === 'trash'
